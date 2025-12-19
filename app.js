@@ -1,8 +1,7 @@
 /* Wound Vac Tracker (PHI-Free)
    - GitHub Pages (HTTPS) required for camera on iPhone
-   - Scanner:
-       1) BarcodeDetector API if available
-       2) Fallback to ZXing (UMD) via script injection (iOS-safe)
+   - iOS-stable scanner:
+       ✅ BarcodeDetector only (NO dynamic imports / NO ZXing)
 */
 
 const STORAGE_KEY = "wvt_logs_v1";
@@ -14,10 +13,14 @@ let ui = {};
 let stream = null;
 let scanning = false;
 let scanTimer = null;
-let zxing = null;       // window.ZXing (UMD)
+let detector = null;
 let startingCamera = false;
 
-// ---------- UI binding (SAFE) ----------
+// Offscreen capture (more iOS-stable than createImageBitmap(video))
+let capCanvas = null;
+let capCtx = null;
+
+// ---------- UI binding ----------
 function bindUI() {
   ui = {
     securePill: el("securePill"),
@@ -42,8 +45,19 @@ function bindUI() {
     kpiUnits: el("kpiUnits"),
   };
 
-  const required = ["securePill","btnStartScan","btnStopScan","video","scanDot","scanText","logForm","tbody"];
-  const missing = required.filter((k) => !ui[k]);
+  // Minimal required elements
+  const requiredEls = [
+    ["securePill", ui.securePill],
+    ["btnStartScan", ui.btnStartScan],
+    ["btnStopScan", ui.btnStopScan],
+    ["video", ui.video],
+    ["scanDot", ui.scanDot],
+    ["scanText", ui.scanText],
+    ["logForm", ui.form],
+    ["tbody", ui.tbody],
+  ];
+
+  const missing = requiredEls.filter(([, node]) => !node).map(([name]) => name);
   if (missing.length) {
     alert("Missing HTML IDs: " + missing.join(", "));
   }
@@ -54,19 +68,9 @@ function isHttps() {
   return location.protocol === "https:" || location.hostname === "localhost";
 }
 
-function isStreamActive(s) {
-  return !!(s && s.getTracks && s.getTracks().some((t) => t.readyState === "live"));
-}
-
 function setPill() {
-  const pill = ui.securePill;
-  if (!pill) return;
-
-  if (isHttps()) {
-    pill.textContent = "HTTPS: secure ✅";
-  } else {
-    pill.textContent = "HTTPS: NOT secure ❌";
-  }
+  if (!ui.securePill) return;
+  ui.securePill.textContent = isHttps() ? "HTTPS: secure ✅" : "HTTPS: NOT secure ❌";
 }
 
 function setScanStatus(kind, text) {
@@ -85,6 +89,20 @@ function prettyTime(iso) {
   return new Date(iso).toLocaleString();
 }
 
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function normalizeScanValue(raw) {
+  return raw ? String(raw).trim() : "";
+}
+
+// ---------- Storage ----------
 function loadLogs() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -151,19 +169,6 @@ function todayCount(logs) {
 function uniqueUnits(logs) {
   const set = new Set(logs.map((l) => (l.unit || "").trim()).filter(Boolean));
   return set.size;
-}
-
-function escapeHtml(s) {
-  return String(s ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function normalizeScanValue(raw) {
-  return raw ? String(raw).trim() : "";
 }
 
 // ---------- Rendering ----------
@@ -241,17 +246,13 @@ function successScan(value) {
   }
 }
 
-// ---------- Camera control (Safari-hardened) ----------
-async function hardReleaseCamera() {
+// ---------- Camera control ----------
+async function stopCamera() {
   scanning = false;
 
   if (scanTimer) {
     clearTimeout(scanTimer);
     scanTimer = null;
-  }
-
-  if (zxing && zxing._reader) {
-    try { zxing._reader.reset(); } catch {}
   }
 
   if (ui.video) {
@@ -270,121 +271,93 @@ async function hardReleaseCamera() {
   setScanStatus(null, "Idle");
 }
 
-async function softStopScan() {
-  // IMPORTANT: do NOT stop tracks (helps iOS Safari restart reliability)
-  scanning = false;
-
-  if (scanTimer) {
-    clearTimeout(scanTimer);
-    scanTimer = null;
-  }
-
-  if (zxing && zxing._reader) {
-    try { zxing._reader.reset(); } catch {}
-  }
-
-  ui.btnStartScan && (ui.btnStartScan.disabled = false);
-  ui.btnStopScan && (ui.btnStopScan.disabled = true);
-
-  setScanStatus(null, "Idle (camera kept ready)");
-}
-
-async function stopCamera() {
-  await softStopScan();
-}
-
 async function startCamera() {
   if (startingCamera) return;
   startingCamera = true;
 
   try {
     if (!isHttps()) {
-      alert("Camera requires HTTPS on iPhone.");
+      alert("Camera requires HTTPS on iPhone. Use your GitHub Pages URL (https://).");
       return;
     }
 
-    setScanStatus("warn", "Starting camera…");
-
-    // Reuse existing live stream
-    if (stream && isStreamActive(stream)) {
-      ui.video.setAttribute("playsinline", "");
-      ui.video.setAttribute("webkit-playsinline", "");
-      ui.video.muted = true;
-      ui.video.autoplay = true;
-
-      ui.video.srcObject = stream;
-      await new Promise((res) => setTimeout(res, 120));
-      await ui.video.play().catch(() => {});
-
-      scanning = true;
-      ui.btnStartScan.disabled = true;
-      ui.btnStopScan.disabled = false;
-
-      setScanStatus(null, "Camera running (reused). Point at barcode / QR.");
-      await beginScanLoop();
+    // Require native BarcodeDetector for the scanner (stable path)
+    if (!("BarcodeDetector" in window)) {
+      setScanStatus("bad", "Scanner unavailable on this iPhone (no BarcodeDetector).");
+      alert(
+        "This iPhone/browser does not support BarcodeDetector.\n\n" +
+        "Fix:\n" +
+        "• Update iOS\n" +
+        "• Use Safari (not in-app browser)\n"
+      );
       return;
     }
 
-    // Fresh acquire
-    await hardReleaseCamera();
+    setScanStatus("warn", "Requesting camera permission…");
 
-    const constraints = {
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-      },
+    // Always fully stop first (avoids iOS weird half-open states)
+    await stopCamera();
+
+    // Request camera
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" } },
       audio: false,
-    };
+    });
 
-    // Retry once for transient Safari errors
-    let lastErr = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        lastErr = null;
-        break;
-      } catch (err) {
-        lastErr = err;
-        const name = err?.name || "";
-        const retryable = ["AbortError", "NotReadableError", "OverconstrainedError"].includes(name);
-        if (attempt === 0 && retryable) {
-          await new Promise((res) => setTimeout(res, 900));
-          continue;
-        }
-        throw err;
-      }
-    }
-    if (!stream) throw lastErr || new Error("No stream");
-
+    // iOS video setup
     ui.video.setAttribute("playsinline", "");
     ui.video.setAttribute("webkit-playsinline", "");
     ui.video.muted = true;
     ui.video.autoplay = true;
-
     ui.video.srcObject = stream;
+
+    // Give iOS a beat
     await new Promise((res) => setTimeout(res, 150));
     await ui.video.play();
+
+    // Setup detector once
+    if (!detector) {
+      // Keep formats broad but safe
+      const formats = [
+        "qr_code",
+        "code_128",
+        "code_39",
+        "ean_13",
+        "ean_8",
+        "upc_a",
+        "upc_e",
+        "itf",
+        "data_matrix",
+        "pdf417",
+      ];
+      try {
+        detector = new BarcodeDetector({ formats });
+      } catch {
+        detector = new BarcodeDetector(); // fallback: browser picks formats
+      }
+    }
+
+    // Setup capture canvas
+    capCanvas = document.createElement("canvas");
+    capCtx = capCanvas.getContext("2d", { willReadFrequently: true });
 
     scanning = true;
     ui.btnStartScan.disabled = true;
     ui.btnStopScan.disabled = false;
 
     setScanStatus(null, "Camera running. Point at barcode / QR.");
-    await beginScanLoop();
 
+    beginScanLoop();
   } catch (err) {
     console.error("Camera error:", err);
 
     const name = err?.name || "UnknownError";
-    const msg  = err?.message || "";
+    const msg = err?.message || "";
     const hint =
-      name === "NotAllowedError" ? "Permission blocked (Safari/Screen Time/MDM)." :
-      name === "NotReadableError" ? "Camera is in use by another app or Safari bug (force-close Camera/FaceTime/Instagram, then restart iPhone if needed)." :
+      name === "NotAllowedError" ? "Permission blocked (Safari settings / Screen Time / MDM)." :
+      name === "NotReadableError" ? "Camera is in use by another app. Force-close Camera/FaceTime/Instagram, then retry." :
       name === "AbortError" ? "Safari glitch. Reload or force-close Safari." :
-      name === "OverconstrainedError" ? "Constraint issue. We will relax constraints." :
-      name === "TypeError" ? "Likely a script/CDN load issue (scanner fallback). We'll handle it." :
-      "Unknown. We'll adjust based on this name.";
+      "Try force-close Safari and reopen.";
 
     setScanStatus("bad", `Camera error: ${name}`);
 
@@ -395,127 +368,61 @@ async function startCamera() {
       "\n" + hint
     );
 
+    await stopCamera();
   } finally {
     startingCamera = false;
   }
 }
 
-// ---------- Scanner loop ----------
-async function beginScanLoop() {
-  const hasBarcodeDetector = "BarcodeDetector" in window;
-
-  // 1) Native BarcodeDetector first
-  if (hasBarcodeDetector) {
-    const formats = ["qr_code", "code_128", "code_39", "ean_13", "ean_8", "upc_a", "upc_e", "itf"];
-    let detector = null;
+// ---------- Scanner loop (BarcodeDetector only) ----------
+function beginScanLoop() {
+  const tick = async () => {
+    if (!scanning) return;
 
     try {
-      detector = new BarcodeDetector({ formats });
-    } catch {
-      detector = null;
-    }
-
-    if (detector) {
-      setScanStatus(null, "Scanner ready (native).");
-
-      const tick = async () => {
-        if (!scanning) return;
-
-        try {
-          const bmp = await createImageBitmap(ui.video);
-          const barcodes = await detector.detect(bmp);
-          bmp.close?.();
-
-          if (barcodes?.length) {
-            successScan(barcodes[0].rawValue || barcodes[0].value || "");
-          }
-        } catch {
-          // ignore frame errors
-        }
-
+      // Ensure video has data
+      if (!ui.video || ui.video.readyState < 2) {
         scanTimer = setTimeout(tick, 250);
-      };
+        return;
+      }
 
-      tick();
-      return;
+      const w = ui.video.videoWidth || 0;
+      const h = ui.video.videoHeight || 0;
+
+      if (!w || !h) {
+        scanTimer = setTimeout(tick, 250);
+        return;
+      }
+
+      // Scale down for speed/stability
+      const targetW = 720;
+      const scale = Math.min(1, targetW / w);
+      const cw = Math.max(320, Math.floor(w * scale));
+      const ch = Math.max(240, Math.floor(h * scale));
+
+      capCanvas.width = cw;
+      capCanvas.height = ch;
+
+      capCtx.drawImage(ui.video, 0, 0, cw, ch);
+
+      const codes = await detector.detect(capCanvas);
+      if (codes && codes.length) {
+        const v = codes[0].rawValue || codes[0].value || "";
+        successScan(v);
+      }
+    } catch (e) {
+      // ignore scan frame errors (common on iOS)
     }
-  }
 
-  // 2) Fallback ZXing (UMD, iOS-safe)
-  setScanStatus("warn", "Native scanner unavailable. Loading fallback scanner…");
+    scanTimer = setTimeout(tick, 250);
+  };
 
-  try {
-    await loadZXing(); // ✅ UMD loader
-  } catch (e) {
-    console.error(e);
-    setScanStatus("bad", "Fallback scanner failed to load.");
-    alert("Scanner fallback failed to load (network/CDN). Try again or switch Wi-Fi.");
-    return; // IMPORTANT: don't throw a camera error
-  }
-
-  setScanStatus(null, "Scanner ready (fallback).");
-
-  try {
-    const reader = new zxing.BrowserMultiFormatReader();
-    zxing._reader = reader;
-
-    if (reader.decodeFromVideoElementContinuously) {
-      reader.decodeFromVideoElementContinuously(ui.video, (result) => {
-        if (!scanning) return;
-        if (result?.getText) successScan(result.getText());
-      });
-    } else {
-      reader.decodeFromVideoDevice(null, ui.video, (result) => {
-        if (!scanning) return;
-        if (result?.getText) successScan(result.getText());
-      });
-    }
-  } catch (e) {
-    console.error(e);
-    setScanStatus("bad", "Fallback scanner failed to start.");
-    alert("Scanner fallback failed to start. Try updating iOS or restarting Safari.");
-  }
-}
-
-// ---------- ZXing loader (UMD injection - Safari-safe) ----------
-async function loadZXing() {
-  // If already loaded, reuse
-  if (window.ZXing) {
-    zxing = window.ZXing;
-    return;
-  }
-
-  // If script already injected, wait briefly
-  if (document.querySelector('script[data-zxing="1"]')) {
-    await new Promise((res) => setTimeout(res, 200));
-    if (window.ZXing) {
-      zxing = window.ZXing;
-      return;
-    }
-  }
-
-  return new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = "https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js";
-    s.async = true;
-    s.setAttribute("data-zxing", "1");
-
-    s.onload = () => {
-      zxing = window.ZXing;
-      if (!zxing) reject(new Error("ZXing loaded but window.ZXing is missing"));
-      else resolve();
-    };
-
-    s.onerror = () => reject(new Error("ZXing UMD script failed to load"));
-
-    document.head.appendChild(s);
-  });
+  tick();
 }
 
 // ---------- Init / Events ----------
 function init() {
-  bindUI(); // ✅ bind after DOM exists
-
+  bindUI();
   setPill();
   render();
   setScanStatus(null, "Idle");
@@ -568,10 +475,10 @@ function init() {
 
   ui.search?.addEventListener("input", render);
 
-  // Lifecycle: hard release only when leaving page
-  window.addEventListener("pagehide", hardReleaseCamera);
+  // If user leaves the page, release camera cleanly
+  window.addEventListener("pagehide", stopCamera);
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) softStopScan();
+    if (document.hidden) stopCamera();
   });
 }
 
