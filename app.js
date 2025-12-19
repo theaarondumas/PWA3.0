@@ -482,9 +482,9 @@ function init() {
   ui.search.addEventListener("input", render);
 
   // Service worker for basic offline (optional)
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
-  }
+  //if ("serviceWorker" in navigator) {
+  //  navigator.serviceWorker.register("./sw.js").catch(() => {});
+ // }
 }
 
 window.addEventListener("load", init);
