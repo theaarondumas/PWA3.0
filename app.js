@@ -259,8 +259,66 @@ async function startCamera() {
   }
 }
 
-async function stopCamera() {
-  scanning = false;
+async function startCamera() {
+  if (!isHttps()) {
+    alert("Camera requires HTTPS on iPhone.");
+    return;
+  }
+
+  try {
+    setScanStatus("warn", "Requesting camera…");
+
+    await stopCamera();
+
+    const constraints = {
+      video: {
+        facingMode: "environment",
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      },
+      audio: false
+    };
+
+    // IMPORTANT: request stream first
+    const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    stream = newStream;
+
+    // IMPORTANT: set attributes BEFORE assigning srcObject
+    ui.video.setAttribute("playsinline", "");
+    ui.video.setAttribute("webkit-playsinline", "");
+    ui.video.muted = true;
+    ui.video.autoplay = true;
+
+    ui.video.srcObject = stream;
+
+    // iOS needs a short delay before play()
+    await new Promise(res => setTimeout(res, 150));
+
+    await ui.video.play();
+
+    scanning = true;
+    ui.btnStartScan.disabled = true;
+    ui.btnStopScan.disabled = false;
+
+    setScanStatus(null, "Camera running. Point at barcode / QR.");
+
+    await beginScanLoop();
+
+  } catch (err) {
+    console.error("Camera error:", err);
+    setScanStatus("bad", "Camera failed (iOS Safari).");
+
+    alert(
+      "Camera failed.\n\n" +
+      "Fix checklist:\n" +
+      "• Reload page\n" +
+      "• Tap Start Camera again\n" +
+      "• Low Power Mode OFF\n" +
+      "• Try Safari (not in-app browser)"
+    );
+  }
+}
 
   if (scanTimer) {
     clearTimeout(scanTimer);
