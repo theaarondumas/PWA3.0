@@ -36,11 +36,16 @@ let stream = null;
 let scanning = false;
 let scanTimer = null;
 let zxing = null; // lazy loaded
+let startingCamera = false;
 
 // ---------- Utilities ----------
 
 function isHttps() {
   return location.protocol === "https:" || location.hostname === "localhost";
+}
+
+function isStreamActive(s) {
+  return !!(s && s.getTracks && s.getTracks().some((t) => t.readyState === "live"));
 }
 
 function setPill() {
@@ -194,7 +199,7 @@ function render() {
   });
 }
 
-// ---------- Scanning ----------
+// ---------- Scan success ----------
 
 function successScan(value) {
   const v = normalizeScanValue(value);
@@ -230,7 +235,9 @@ function successScan(value) {
   }
 }
 
-async function stopCamera() {
+// ---------- Camera control (Safari-hardened) ----------
+
+async function hardReleaseCamera() {
   scanning = false;
 
   if (scanTimer) {
@@ -239,68 +246,118 @@ async function stopCamera() {
   }
 
   if (zxing && zxing._reader) {
-    try {
-      zxing._reader.reset();
-    } catch {}
+    try { zxing._reader.reset(); } catch {}
   }
 
   if (ui.video) {
-    try {
-      ui.video.pause();
-    } catch {}
+    try { ui.video.pause(); } catch {}
     ui.video.srcObject = null;
   }
 
   if (stream) {
-    stream.getTracks().forEach((t) => t.stop());
+    try { stream.getTracks().forEach((t) => t.stop()); } catch {}
     stream = null;
   }
 
-  if (ui.btnStartScan) ui.btnStartScan.disabled = false;
-  if (ui.btnStopScan) ui.btnStopScan.disabled = true;
+  ui.btnStartScan && (ui.btnStartScan.disabled = false);
+  ui.btnStopScan && (ui.btnStopScan.disabled = true);
 
   setScanStatus(null, "Idle");
 }
 
-async function startCamera() {
-  // Safari hardening: prevent double-start / overlapping requests
-  if (scanning || stream) {
-    console.log("Camera already running");
-    return;
+async function softStopScan() {
+  // IMPORTANT: do NOT stop tracks (avoids iOS Safari re-open bug)
+  scanning = false;
+
+  if (scanTimer) {
+    clearTimeout(scanTimer);
+    scanTimer = null;
   }
 
-  if (!isHttps()) {
-    alert("Camera requires HTTPS on iPhone.");
-    return;
+  if (zxing && zxing._reader) {
+    try { zxing._reader.reset(); } catch {}
   }
+
+  ui.btnStartScan && (ui.btnStartScan.disabled = false);
+  ui.btnStopScan && (ui.btnStopScan.disabled = true);
+
+  setScanStatus(null, "Idle (camera kept ready)");
+}
+
+async function stopCamera() {
+  await softStopScan();
+}
+
+async function startCamera() {
+  if (startingCamera) return;
+  startingCamera = true;
 
   try {
-    setScanStatus("warn", "Requesting camera…");
+    if (!isHttps()) {
+      alert("Camera requires HTTPS on iPhone.");
+      return;
+    }
 
-    // Always stop/reset before requesting again
-    await stopCamera();
+    setScanStatus("warn", "Starting camera…");
+
+    // Reuse live stream if we already have it
+    if (stream && isStreamActive(stream)) {
+      ui.video.setAttribute("playsinline", "");
+      ui.video.setAttribute("webkit-playsinline", "");
+      ui.video.muted = true;
+      ui.video.autoplay = true;
+
+      ui.video.srcObject = stream;
+      await new Promise((res) => setTimeout(res, 120));
+      await ui.video.play().catch(() => {});
+
+      scanning = true;
+      ui.btnStartScan.disabled = true;
+      ui.btnStopScan.disabled = false;
+
+      setScanStatus(null, "Camera running (reused). Point at barcode / QR.");
+      await beginScanLoop();
+      return;
+    }
+
+    // Otherwise acquire fresh stream
+    await hardReleaseCamera();
 
     const constraints = {
       video: {
-        facingMode: "environment",
+        facingMode: { ideal: "environment" },
         width: { ideal: 1280 },
         height: { ideal: 720 },
       },
       audio: false,
     };
 
-    const newStream = await navigator.mediaDevices.getUserMedia(constraints);
-    stream = newStream;
+    // Retry once for transient Safari errors
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+        const name = err?.name || "";
+        const retryable = ["AbortError", "NotReadableError", "OverconstrainedError"].includes(name);
+        if (attempt === 0 && retryable) {
+          await new Promise((res) => setTimeout(res, 900));
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (!stream) throw lastErr || new Error("No stream");
 
-    // iOS Safari hardening
     ui.video.setAttribute("playsinline", "");
     ui.video.setAttribute("webkit-playsinline", "");
     ui.video.muted = true;
     ui.video.autoplay = true;
 
     ui.video.srcObject = stream;
-
-    // iOS needs a short delay before play()
     await new Promise((res) => setTimeout(res, 150));
     await ui.video.play();
 
@@ -313,21 +370,24 @@ async function startCamera() {
   } catch (err) {
     console.error("Camera error:", err);
 
-    // Safari hardening: force release + wait so next attempt works
-    await stopCamera();
-    await new Promise((res) => setTimeout(res, 500));
+    // give Safari time to recover
+    await new Promise((res) => setTimeout(res, 600));
 
     setScanStatus("bad", "Camera failed (iOS Safari).");
     alert(
       "Camera failed.\n\n" +
-        "Fix checklist:\n" +
-        "• Settings → Safari → Camera = Allow\n" +
-        "• Website Settings (aA) → Camera = Allow\n" +
-        "• Low Power Mode OFF\n" +
-        "• If it fails again: reload page, then Start Camera"
+        "Try:\n" +
+        "• Tap Close\n" +
+        "• Wait 1 second\n" +
+        "• Tap Start Camera again\n\n" +
+        "If still stuck: force-close Safari and reopen."
     );
+  } finally {
+    startingCamera = false;
   }
 }
+
+// ---------- Scanner loop ----------
 
 async function beginScanLoop() {
   const hasBarcodeDetector = "BarcodeDetector" in window;
@@ -368,7 +428,7 @@ async function beginScanLoop() {
     }
   }
 
-  // Fallback to ZXing
+  // Fallback ZXing
   setScanStatus("warn", "Native scanner unavailable. Loading fallback scanner…");
   await loadZXing();
   setScanStatus(null, "Scanner ready (fallback).");
@@ -455,6 +515,12 @@ function init() {
   });
 
   ui.search?.addEventListener("input", render);
+
+  // Lifecycle: hard release only when leaving page (battery + stability)
+  window.addEventListener("pagehide", hardReleaseCamera);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) softStopScan();
+  });
 
   // Keep Service Worker OFF until you're fully happy with camera stability on iOS
   // if ("serviceWorker" in navigator) {
