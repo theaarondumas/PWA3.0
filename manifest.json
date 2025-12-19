@@ -1,0 +1,15 @@
+{
+  "name": "Wound Vac Tracker (PHI-Free)",
+  "short_name": "WoundVac",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0b0c10",
+  "theme_color": "#0b0c10",
+  "icons": [
+    {
+      "src": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAYAAABS3GwHAAAACXBIWXMAAAsSAAALEgHS3X78AAAAH0lEQVR4nO3BMQEAAADCoPVPbQ0PoAAAAAAAAAAAAAAA4B8GmQAAAZm9cKkAAAAASUVORK5CYII=",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}
