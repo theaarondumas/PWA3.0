@@ -46,6 +46,7 @@ function isHttps() {
 function setPill() {
   const pill = ui.securePill;
   if (!pill) return;
+
   if (isHttps()) {
     pill.textContent = "HTTPS: secure ✅";
   } else {
@@ -262,6 +263,12 @@ async function stopCamera() {
 }
 
 async function startCamera() {
+  // Safari hardening: prevent double-start / overlapping requests
+  if (scanning || stream) {
+    console.log("Camera already running");
+    return;
+  }
+
   if (!isHttps()) {
     alert("Camera requires HTTPS on iPhone.");
     return;
@@ -269,6 +276,8 @@ async function startCamera() {
 
   try {
     setScanStatus("warn", "Requesting camera…");
+
+    // Always stop/reset before requesting again
     await stopCamera();
 
     const constraints = {
@@ -291,6 +300,7 @@ async function startCamera() {
 
     ui.video.srcObject = stream;
 
+    // iOS needs a short delay before play()
     await new Promise((res) => setTimeout(res, 150));
     await ui.video.play();
 
@@ -302,6 +312,11 @@ async function startCamera() {
     await beginScanLoop();
   } catch (err) {
     console.error("Camera error:", err);
+
+    // Safari hardening: force release + wait so next attempt works
+    await stopCamera();
+    await new Promise((res) => setTimeout(res, 500));
+
     setScanStatus("bad", "Camera failed (iOS Safari).");
     alert(
       "Camera failed.\n\n" +
@@ -309,7 +324,7 @@ async function startCamera() {
         "• Settings → Safari → Camera = Allow\n" +
         "• Website Settings (aA) → Camera = Allow\n" +
         "• Low Power Mode OFF\n" +
-        "• Force-close Safari + reload"
+        "• If it fails again: reload page, then Start Camera"
     );
   }
 }
@@ -393,11 +408,9 @@ function init() {
   render();
   setScanStatus(null, "Idle");
 
-  // Buttons
   ui.btnStartScan?.addEventListener("click", startCamera);
   ui.btnStopScan?.addEventListener("click", stopCamera);
 
-  // Form submit (manual log)
   ui.form?.addEventListener("submit", (e) => {
     e.preventDefault();
 
@@ -443,7 +456,7 @@ function init() {
 
   ui.search?.addEventListener("input", render);
 
-  // Service worker optional; keep OFF until camera confirmed stable
+  // Keep Service Worker OFF until you're fully happy with camera stability on iOS
   // if ("serviceWorker" in navigator) {
   //   navigator.serviceWorker.register("./sw.js").catch(() => {});
   // }
