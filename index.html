@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0c10" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Wound Vac Tracker" />
+
+  <link rel="manifest" href="./manifest.json" />
+
+  <title>Wound Vac Tracker (PHI-Free)</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+
+<body>
+  <header class="top">
+    <div>
+      <h1>Wound Vac Tracker</h1>
+      <p class="sub">PHI-free • Unit / Room / Bed • Scan barcode/QR • Log + Export</p>
+    </div>
+    <div class="pill" id="securePill">HTTPS: checking…</div>
+  </header>
+
+  <main class="grid">
+    <section class="card">
+      <h2>Scan</h2>
+
+      <div class="row">
+        <button class="btn primary" id="btnStartScan">Start Camera</button>
+        <button class="btn" id="btnStopScan" disabled>Stop</button>
+      </div>
+
+      <div class="videoWrap">
+        <video id="video" playsinline muted></video>
+        <div class="overlay">
+          <div class="reticle"></div>
+          <div class="hint">Aim at barcode / QR</div>
+        </div>
+      </div>
+
+      <div class="scanStatus" id="scanStatus" aria-live="polite">
+        <span class="dot" id="scanDot"></span>
+        <span id="scanText">Idle</span>
+      </div>
+
+      <div class="row">
+        <label class="check">
+          <input type="checkbox" id="autoLog" checked />
+          Auto-log after successful scan
+        </label>
+      </div>
+
+      <details class="details">
+        <summary>Troubleshooting</summary>
+        <ul>
+          <li>Camera only works on <b>HTTPS</b> (GitHub Pages is HTTPS).</li>
+          <li>Tap <b>Start Camera</b> (required user gesture on iPhone).</li>
+          <li>If it says “Not secure”, you’re not on HTTPS.</li>
+        </ul>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>Log Entry</h2>
+
+      <form id="logForm">
+        <div class="row3">
+          <div>
+            <label>Unit</label>
+            <input id="unit" autocomplete="off" placeholder="e.g., 5W" required />
+          </div>
+          <div>
+            <label>Room</label>
+            <input id="room" autocomplete="off" placeholder="e.g., 512" required />
+          </div>
+          <div>
+            <label>Bed</label>
+            <input id="bed" autocomplete="off" placeholder="e.g., A" required />
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="grow">
+            <label>Device Serial / Asset #</label>
+            <input id="serial" autocomplete="off" placeholder="Scan fills this automatically" required />
+          </div>
+        </div>
+
+        <div class="row">
+          <button class="btn primary" type="submit">Log Device</button>
+          <button class="btn" type="button" id="btnClear">Clear</button>
+        </div>
+
+        <p class="fine">Stored locally on this device (no PHI, no cloud).</p>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Dashboard</h2>
+      <div class="kpis">
+        <div class="kpi">
+          <div class="kpiVal" id="kpiTotal">0</div>
+          <div class="kpiLab">Total Logs</div>
+        </div>
+        <div class="kpi">
+          <div class="kpiVal" id="kpiToday">0</div>
+          <div class="kpiLab">Logged Today</div>
+        </div>
+        <div class="kpi">
+          <div class="kpiVal" id="kpiUnits">0</div>
+          <div class="kpiLab">Unique Units</div>
+        </div>
+      </div>
+
+      <div class="row">
+        <button class="btn" id="btnExport">Export CSV</button>
+        <button class="btn danger" id="btnWipe">Wipe All Data</button>
+      </div>
+
+      <div class="row">
+        <input id="search" class="grow" placeholder="Search unit/room/bed/serial…" />
+      </div>
+
+      <div class="tableWrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Unit</th>
+              <th>Room</th>
+              <th>Bed</th>
+              <th>Serial</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>Tip: On iPhone, tap Share → <b>Add to Home Screen</b> for an app-like install.</span>
+  </footer>
+
+  <script src="./app.js"></script>
+</body>
+</html>
