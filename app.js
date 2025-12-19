@@ -2,7 +2,7 @@
    - GitHub Pages (HTTPS) required for camera on iPhone
    - Scanner:
        1) BarcodeDetector API if available
-       2) Fallback to ZXing via dynamic import from CDN
+       2) Fallback to ZXing (UMD) via script injection (iOS-safe)
 */
 
 const STORAGE_KEY = "wvt_logs_v1";
@@ -14,7 +14,7 @@ let ui = {};
 let stream = null;
 let scanning = false;
 let scanTimer = null;
-let zxing = null;       // lazy loaded
+let zxing = null;       // window.ZXing (UMD)
 let startingCamera = false;
 
 // ---------- UI binding (SAFE) ----------
@@ -383,6 +383,7 @@ async function startCamera() {
       name === "NotReadableError" ? "Camera is in use by another app or Safari bug (force-close Camera/FaceTime/Instagram, then restart iPhone if needed)." :
       name === "AbortError" ? "Safari glitch. Reload or force-close Safari." :
       name === "OverconstrainedError" ? "Constraint issue. We will relax constraints." :
+      name === "TypeError" ? "Likely a script/CDN load issue (scanner fallback). We'll handle it." :
       "Unknown. We'll adjust based on this name.";
 
     setScanStatus("bad", `Camera error: ${name}`);
@@ -403,6 +404,7 @@ async function startCamera() {
 async function beginScanLoop() {
   const hasBarcodeDetector = "BarcodeDetector" in window;
 
+  // 1) Native BarcodeDetector first
   if (hasBarcodeDetector) {
     const formats = ["qr_code", "code_128", "code_39", "ean_13", "ean_8", "upc_a", "upc_e", "itf"];
     let detector = null;
@@ -439,9 +441,18 @@ async function beginScanLoop() {
     }
   }
 
-  // Fallback ZXing
+  // 2) Fallback ZXing (UMD, iOS-safe)
   setScanStatus("warn", "Native scanner unavailable. Loading fallback scanner…");
-  await loadZXing();
+
+  try {
+    await loadZXing(); // ✅ UMD loader
+  } catch (e) {
+    console.error(e);
+    setScanStatus("bad", "Fallback scanner failed to load.");
+    alert("Scanner fallback failed to load (network/CDN). Try again or switch Wi-Fi.");
+    return; // IMPORTANT: don't throw a camera error
+  }
+
   setScanStatus(null, "Scanner ready (fallback).");
 
   try {
@@ -462,14 +473,43 @@ async function beginScanLoop() {
   } catch (e) {
     console.error(e);
     setScanStatus("bad", "Fallback scanner failed to start.");
-    alert("Scanner fallback failed. Try updating iOS, or test another device.");
+    alert("Scanner fallback failed to start. Try updating iOS or restarting Safari.");
   }
 }
 
+// ---------- ZXing loader (UMD injection - Safari-safe) ----------
 async function loadZXing() {
-  if (zxing) return;
-  const mod = await import("https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/esm/index.min.js");
-  zxing = mod;
+  // If already loaded, reuse
+  if (window.ZXing) {
+    zxing = window.ZXing;
+    return;
+  }
+
+  // If script already injected, wait briefly
+  if (document.querySelector('script[data-zxing="1"]')) {
+    await new Promise((res) => setTimeout(res, 200));
+    if (window.ZXing) {
+      zxing = window.ZXing;
+      return;
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js";
+    s.async = true;
+    s.setAttribute("data-zxing", "1");
+
+    s.onload = () => {
+      zxing = window.ZXing;
+      if (!zxing) reject(new Error("ZXing loaded but window.ZXing is missing"));
+      else resolve();
+    };
+
+    s.onerror = () => reject(new Error("ZXing UMD script failed to load"));
+
+    document.head.appendChild(s);
+  });
 }
 
 // ---------- Init / Events ----------
