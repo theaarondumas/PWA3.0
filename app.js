@@ -44,12 +44,16 @@ function isHttps() {
 }
 
 function setPill() {
+  if (!ui.securePill) {
+    console.warn("securePill not found");
+    return;
+  }
+
   if (isHttps()) {
     ui.securePill.textContent = "HTTPS: secure ✅";
-    ui.securePill.style.color = "rgba(55,214,122,.95)";
+    ui.securePill.style.color = "#37d67a";
   } else {
     ui.securePill.textContent = "HTTPS: NOT secure ❌";
-    ui.securePill.style.color = "rgba(255,77,77,.95)";
   }
 }
 
