@@ -252,8 +252,8 @@ async function feedback() {
 
     renderAll();
     setScanStatus("ok", "Logged ✅");
+    showAccepted("LOGGED"); // or "ACCEPTED"
     return true;
-  }
 
   // -------------------------
   // Table + KPIs
