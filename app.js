@@ -1,590 +1,547 @@
-/* Wound Vac Tracker (PHI-Free)
-   - GitHub Pages (HTTPS) required for camera on iPhone
-   - Scanner strategy:
-       iOS Safari: ZXing ONLY (BarcodeDetector is not supported reliably)
-       Others: try native BarcodeDetector, fallback to ZXing
+/* Wound Vac Tracker (PHI-Free) - Safari-safe single file
+   - No imports / no modules (fixes "Importing a module script failed")
+   - Camera scan via BarcodeDetector when supported
+   - Manual entry fallback
+   - LocalStorage log + CSV export
 */
 
-const STORAGE_KEY = "wvt_logs_v1";
-const el = (id) => document.getElementById(id);
+(() => {
+  "use strict";
 
-let ui = {};
+  // ---------- Config ----------
+  const STORAGE_KEY = "wvt_logs_v1";
+  const MAX_LOGS = 2000;
 
-// ---- state ----
-let stream = null;
-let scanning = false;
-let scanTimer = null;
-let zxing = null;       // lazy loaded
-let startingCamera = false;
+  // Try these formats; Safari support varies.
+  // If a format isn't supported, BarcodeDetector will ignore it or throw.
+  const PREFERRED_FORMATS = [
+    "qr_code",
+    "code_128",
+    "code_39",
+    "ean_13",
+    "ean_8",
+    "upc_a",
+    "upc_e",
+    "itf",
+    "data_matrix",
+    "pdf417"
+  ];
 
-// ---------- UI binding (SAFE) ----------
-function bindUI() {
-  ui = {
-    securePill: el("securePill"),
-    btnStartScan: el("btnStartScan"),
-    btnStopScan: el("btnStopScan"),
-    video: el("video"),
-    scanDot: el("scanDot"),
-    scanText: el("scanText"),
-    autoLog: el("autoLog"),
-    form: el("logForm"),
-    unit: el("unit"),
-    room: el("room"),
-    bed: el("bed"),
-    serial: el("serial"),
-    btnClear: el("btnClear"),
-    btnExport: el("btnExport"),
-    btnWipe: el("btnWipe"),
-    search: el("search"),
-    tbody: el("tbody"),
-    kpiTotal: el("kpiTotal"),
-    kpiToday: el("kpiToday"),
-    kpiUnits: el("kpiUnits"),
-  };
+  // ---------- Helpers ----------
+  const $ = (sel, root = document) => root.querySelector(sel);
 
-  // Don’t block the app; just warn.
-  const required = ["securePill","btnStartScan","btnStopScan","video","scanDot","scanText","tbody"];
-  const missing = required.filter((k) => !ui[k]);
-  if (missing.length) {
-    alert("Missing HTML IDs: " + missing.join(", "));
-  }
-}
-
-// ---------- Utilities ----------
-function isHttps() {
-  return location.protocol === "https:" || location.hostname === "localhost";
-}
-
-function isIOS() {
-  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-}
-
-function isStreamActive(s) {
-  return !!(s && s.getTracks && s.getTracks().some((t) => t.readyState === "live"));
-}
-
-function setPill() {
-  const pill = ui.securePill;
-  if (!pill) return;
-
-  if (isHttps()) {
-    pill.textContent = "HTTPS: secure ✅";
-    pill.style.color = "#37d67a";
-  } else {
-    pill.textContent = "HTTPS: NOT secure ❌";
-    pill.style.color = "";
-  }
-}
-
-function setScanStatus(kind, text) {
-  if (ui.scanDot) {
-    ui.scanDot.className = "dot";
-    if (kind) ui.scanDot.classList.add(kind);
-  }
-  if (ui.scanText) ui.scanText.textContent = text;
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function prettyTime(iso) {
-  return new Date(iso).toLocaleString();
-}
-
-function loadLogs() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveLogs(logs) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(logs));
-}
-
-function addLog(entry) {
-  const logs = loadLogs();
-  logs.unshift(entry);
-  saveLogs(logs);
-  render();
-}
-
-function deleteLog(id) {
-  const logs = loadLogs().filter((x) => x.id !== id);
-  saveLogs(logs);
-  render();
-}
-
-function wipeAll() {
-  localStorage.removeItem(STORAGE_KEY);
-  render();
-}
-
-function toCsv(logs) {
-  const header = ["timestamp", "unit", "room", "bed", "serial"];
-  const rows = logs.map((l) => [
-    l.timestamp,
-    l.unit,
-    l.room,
-    l.bed,
-    (l.serial || "").replaceAll('"', '""'),
-  ]);
-  return [header, ...rows]
-    .map((r) => r.map((v) => `"${v ?? ""}"`).join(","))
-    .join("\n");
-}
-
-function downloadText(filename, text, mime = "text/plain") {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-function todayCount(logs) {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  return logs.filter((l) => new Date(l.timestamp) >= start).length;
-}
-
-function uniqueUnits(logs) {
-  const set = new Set(logs.map((l) => (l.unit || "").trim()).filter(Boolean));
-  return set.size;
-}
-
-function escapeHtml(s) {
-  return String(s ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function normalizeScanValue(raw) {
-  return raw ? String(raw).trim() : "";
-}
-
-// ---------- Rendering ----------
-function render() {
-  if (!ui.tbody) return;
-
-  const q = (ui.search?.value || "").toLowerCase().trim();
-  const logs = loadLogs();
-
-  if (ui.kpiTotal) ui.kpiTotal.textContent = String(logs.length);
-  if (ui.kpiToday) ui.kpiToday.textContent = String(todayCount(logs));
-  if (ui.kpiUnits) ui.kpiUnits.textContent = String(uniqueUnits(logs));
-
-  const filtered = !q
-    ? logs
-    : logs.filter((l) => {
-        const hay = `${l.unit} ${l.room} ${l.bed} ${l.serial} ${l.timestamp}`.toLowerCase();
-        return hay.includes(q);
-      });
-
-  ui.tbody.innerHTML = filtered
-    .map(
-      (l) => `
-      <tr>
-        <td><span class="badge">${prettyTime(l.timestamp)}</span></td>
-        <td>${escapeHtml(l.unit)}</td>
-        <td>${escapeHtml(l.room)}</td>
-        <td>${escapeHtml(l.bed)}</td>
-        <td><b>${escapeHtml(l.serial)}</b></td>
-        <td class="actions">
-          <button class="btn danger" data-del="${l.id}">Delete</button>
-        </td>
-      </tr>
-    `
-    )
-    .join("");
-
-  [...ui.tbody.querySelectorAll("button[data-del]")].forEach((btn) => {
-    btn.addEventListener("click", () => deleteLog(btn.getAttribute("data-del")));
-  });
-}
-
-// ---------- Scan success ----------
-function successScan(value) {
-  const v = normalizeScanValue(value);
-  if (!v) {
-    setScanStatus("warn", "Scan read empty value—try again.");
-    return;
+  function safeText(el, txt) {
+    if (!el) return;
+    el.textContent = txt;
   }
 
-  setScanStatus("good", `Scan successful ✅ (${v})`);
-  if (navigator.vibrate) navigator.vibrate(60);
+  function nowIso() {
+    return new Date().toISOString();
+  }
 
-  if (ui.serial) ui.serial.value = v;
-
-  if (ui.autoLog?.checked) {
-    const unit = ui.unit?.value.trim() || "";
-    const room = ui.room?.value.trim() || "";
-    const bed = ui.bed?.value.trim() || "";
-
-    if (unit && room && bed) {
-      addLog({
-        id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random(),
-        timestamp: nowIso(),
-        unit,
-        room,
-        bed,
-        serial: v,
-      });
-      if (ui.serial) ui.serial.value = "";
-      setScanStatus("good", "Logged ✅ Ready for next scan.");
-    } else {
-      setScanStatus("warn", "Scanned ✅ Now enter Unit/Room/Bed to log.");
+  function loadLogs() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      return [];
     }
   }
-}
 
-// ---------- Camera control (Safari-hardened) ----------
-async function hardReleaseCamera() {
-  scanning = false;
-
-  if (scanTimer) {
-    clearTimeout(scanTimer);
-    scanTimer = null;
-  }
-
-  if (zxing && zxing._reader) {
-    try { zxing._reader.reset(); } catch {}
-  }
-
-  if (ui.video) {
-    try { ui.video.pause(); } catch {}
-    ui.video.srcObject = null;
-  }
-
-  if (stream) {
-    try { stream.getTracks().forEach((t) => t.stop()); } catch {}
-    stream = null;
-  }
-
-  ui.btnStartScan && (ui.btnStartScan.disabled = false);
-  ui.btnStopScan && (ui.btnStopScan.disabled = true);
-
-  setScanStatus(null, "Idle");
-}
-
-async function softStopScan() {
-  // IMPORTANT: do NOT stop tracks (helps iOS Safari restart reliability)
-  scanning = false;
-
-  if (scanTimer) {
-    clearTimeout(scanTimer);
-    scanTimer = null;
-  }
-
-  if (zxing && zxing._reader) {
-    try { zxing._reader.reset(); } catch {}
-  }
-
-  ui.btnStartScan && (ui.btnStartScan.disabled = false);
-  ui.btnStopScan && (ui.btnStopScan.disabled = true);
-
-  setScanStatus(null, "Idle (camera kept ready)");
-}
-
-async function stopCamera() {
-  await softStopScan();
-}
-
-async function startCamera() {
-  if (startingCamera) return;
-  startingCamera = true;
-
-  try {
-    if (!isHttps()) {
-      alert("Camera requires HTTPS on iPhone (GitHub Pages).");
-      return;
+  function saveLogs(logs) {
+    try {
+      const clipped = logs.slice(-MAX_LOGS);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(clipped));
+    } catch (e) {
+      console.warn("Failed saving logs", e);
     }
+  }
 
-    setScanStatus("warn", "Starting camera…");
+  function escapeCsv(val) {
+    const s = String(val ?? "");
+    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  }
 
-    // Reuse existing live stream
-    if (stream && isStreamActive(stream)) {
-      prepareVideoElementForIOS();
-      ui.video.srcObject = stream;
-      await delay(120);
-      await ui.video.play().catch(() => {});
-      scanning = true;
-      ui.btnStartScan.disabled = true;
-      ui.btnStopScan.disabled = false;
-      setScanStatus(null, "Camera running (reused). Point at barcode / QR.");
-      await beginScanLoop();
-      return;
+  function downloadText(filename, text) {
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  function setBadge(type, msg) {
+    // type: "ok" | "err" | "info"
+    const badge = $("#wvtBadge");
+    const badgeMsg = $("#wvtBadgeMsg");
+    if (!badge || !badgeMsg) return;
+
+    badge.classList.remove("ok", "err", "info");
+    badge.classList.add(type);
+    badgeMsg.textContent = msg;
+
+    // auto-hide after a moment for ok/info, keep errors longer
+    const ms = type === "err" ? 4000 : 1800;
+    badge.style.opacity = "1";
+    clearTimeout(setBadge._t);
+    setBadge._t = setTimeout(() => {
+      badge.style.opacity = "0";
+    }, ms);
+  }
+
+  function fmtTime(iso) {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString();
+    } catch {
+      return iso;
     }
+  }
 
-    // Fresh acquire
-    await hardReleaseCamera();
+  // ---------- UI injection (works even if your HTML changes) ----------
+  function ensureUI() {
+    // Try to mount into an existing container; otherwise body.
+    const mount =
+      $("#scan") ||
+      $("#scanner") ||
+      $("#main") ||
+      $("main") ||
+      document.body;
 
-    // Start with reasonable constraints; if OverconstrainedError, we'll relax.
-    let constraints = {
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-      },
-      audio: false,
-    };
+    // Avoid double-inject
+    if ($("#wvtRoot")) return;
 
-    let lastErr = null;
+    const root = document.createElement("section");
+    root.id = "wvtRoot";
+    root.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin: 12px 0;">
+        <div style="font-weight:700; font-size:16px;">Scan</div>
+        <div id="wvtBadge" class="info" style="
+          transition:opacity .2s ease;
+          opacity:0;
+          padding:8px 10px;
+          border-radius:12px;
+          font-size:13px;
+          border:1px solid rgba(255,255,255,.14);
+          background: rgba(30,30,30,.55);
+          backdrop-filter: blur(8px);
+        ">
+          <span id="wvtBadgeMsg">Ready</span>
+        </div>
+      </div>
 
-    for (let attempt = 0; attempt < 2; attempt++) {
+      <div style="display:grid; gap:10px;">
+        <div style="border-radius:16px; overflow:hidden; border:1px solid rgba(255,255,255,.12); background: rgba(0,0,0,.25);">
+          <video id="wvtVideo" playsinline muted style="width:100%; height:auto; display:block; background:#000;"></video>
+        </div>
+
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+          <button id="wvtStartBtn" type="button" style="flex:1; min-width:140px; padding:12px 14px; border-radius:14px; border:1px solid rgba(255,255,255,.14); background: rgba(40,40,40,.55); color:#fff;">
+            Start Scan
+          </button>
+          <button id="wvtStopBtn" type="button" disabled style="flex:1; min-width:140px; padding:12px 14px; border-radius:14px; border:1px solid rgba(255,255,255,.14); background: rgba(40,40,40,.25); color:#aaa;">
+            Stop
+          </button>
+          <button id="wvtTorchBtn" type="button" disabled style="flex:1; min-width:140px; padding:12px 14px; border-radius:14px; border:1px solid rgba(255,255,255,.14); background: rgba(40,40,40,.25); color:#aaa;">
+            Torch
+          </button>
+        </div>
+
+        <div style="display:grid; gap:8px;">
+          <div style="font-size:12px; opacity:.8;">Last scan</div>
+          <div id="wvtLast" style="padding:12px 14px; border-radius:14px; border:1px solid rgba(255,255,255,.12); background: rgba(20,20,20,.35); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">
+            —
+          </div>
+        </div>
+
+        <details style="border-radius:14px; border:1px solid rgba(255,255,255,.10); background: rgba(20,20,20,.25); padding:10px 12px;">
+          <summary style="cursor:pointer; font-weight:600;">Manual entry (fallback)</summary>
+          <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
+            <input id="wvtManual" placeholder="Enter serial / QR text" inputmode="text" autocomplete="off"
+              style="flex:1; min-width:220px; padding:12px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.12); background: rgba(0,0,0,.25); color:#fff;" />
+            <button id="wvtManualSave" type="button"
+              style="padding:12px 14px; border-radius:12px; border:1px solid rgba(255,255,255,.14); background: rgba(40,40,40,.55); color:#fff;">
+              Log
+            </button>
+          </div>
+        </details>
+
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:4px;">
+          <button id="wvtExportBtn" type="button" style="flex:1; min-width:160px; padding:12px 14px; border-radius:14px; border:1px solid rgba(255,255,255,.14); background: rgba(40,40,40,.55); color:#fff;">
+            Export CSV
+          </button>
+          <button id="wvtClearBtn" type="button" style="flex:1; min-width:160px; padding:12px 14px; border-radius:14px; border:1px solid rgba(255,255,255,.14); background: rgba(70,20,20,.45); color:#fff;">
+            Clear Logs
+          </button>
+        </div>
+
+        <div style="font-size:12px; opacity:.75; line-height:1.35;">
+          Notes: Requires HTTPS. If scan isn’t supported on this iPhone/browser, use Manual entry.
+        </div>
+      </div>
+    `;
+
+    mount.appendChild(root);
+
+    // add minimal badge color classes
+    const style = document.createElement("style");
+    style.textContent = `
+      #wvtBadge.ok { border-color: rgba(80,255,160,.35) !important; background: rgba(10,70,30,.45) !important; }
+      #wvtBadge.err { border-color: rgba(255,80,80,.35) !important; background: rgba(80,10,10,.45) !important; }
+      #wvtBadge.info{ border-color: rgba(120,170,255,.35) !important; background: rgba(10,25,60,.45) !important; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  // ---------- Scanning engine ----------
+  let stream = null;
+  let scanning = false;
+  let detector = null;
+  let rafId = null;
+  let lastValue = "";
+  let lastAt = 0;
+  let torchOn = false;
+  let videoTrack = null;
+
+  function canUseBarcodeDetector() {
+    return "BarcodeDetector" in window;
+  }
+
+  async function buildDetector() {
+    // Try preferred formats first; if Safari throws, fall back to default constructor
+    try {
+      const supported = await window.BarcodeDetector.getSupportedFormats?.();
+      // If supported formats list exists, choose overlap; else use preferred.
+      const formats = Array.isArray(supported) && supported.length
+        ? PREFERRED_FORMATS.filter(f => supported.includes(f))
+        : PREFERRED_FORMATS;
+
+      // If overlap is empty, still try with preferred list.
+      return new window.BarcodeDetector({ formats: formats.length ? formats : PREFERRED_FORMATS });
+    } catch (e) {
+      // Some browsers don't allow getSupportedFormats; try simplest
       try {
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        lastErr = null;
-        break;
+        return new window.BarcodeDetector();
       } catch (err) {
-        lastErr = err;
-        const name = err?.name || "";
-
-        // If constraints are too strict, relax on retry
-        if (name === "OverconstrainedError") {
-          constraints = { video: { facingMode: "environment" }, audio: false };
-        }
-
-        const retryable = ["AbortError", "NotReadableError", "OverconstrainedError"].includes(name);
-        if (attempt === 0 && retryable) {
-          await delay(900);
-          continue;
-        }
         throw err;
       }
     }
-
-    if (!stream) throw lastErr || new Error("No stream");
-
-    prepareVideoElementForIOS();
-    ui.video.srcObject = stream;
-
-    await delay(150);
-    await ui.video.play();
-
-    scanning = true;
-    ui.btnStartScan.disabled = true;
-    ui.btnStopScan.disabled = false;
-
-    setScanStatus(null, "Camera running. Point at barcode / QR.");
-    await beginScanLoop();
-
-  } catch (err) {
-    console.error("Camera error:", err);
-
-    const name = err?.name || "UnknownError";
-    const msg  = err?.message || "";
-    const hint =
-      name === "NotAllowedError" ? "Permission blocked (Safari/Screen Time/MDM)." :
-      name === "NotReadableError" ? "Camera in use by another app or iOS/Safari glitch. Force-close Camera/FaceTime/Instagram, then retry. If needed restart iPhone." :
-      name === "AbortError" ? "Safari glitch. Reload or force-close Safari." :
-      name === "OverconstrainedError" ? "Camera constraints issue. We relaxed constraints; retry Start Camera." :
-      name === "TypeError" ? "Often a script/cache issue. Hard refresh / clear Safari website data and retry." :
-      "Unknown. Retry after force-closing Safari.";
-
-    setScanStatus("bad", `Camera error: ${name}`);
-
-    alert(
-      "Camera failed.\n\n" +
-      "ERROR: " + name + "\n" +
-      (msg ? ("MSG: " + msg + "\n") : "") +
-      "\n" + hint
-    );
-
-  } finally {
-    startingCamera = false;
   }
-}
 
-function prepareVideoElementForIOS() {
-  if (!ui.video) return;
-  ui.video.setAttribute("playsinline", "");
-  ui.video.setAttribute("webkit-playsinline", "");
-  ui.video.muted = true;
-  ui.video.autoplay = true;
-}
+  async function startCamera() {
+    const video = $("#wvtVideo");
+    if (!video) throw new Error("Video element not found");
 
-function delay(ms) {
-  return new Promise((res) => setTimeout(res, ms));
-}
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error("Camera API not supported on this browser");
+    }
+    if (location.protocol !== "https:" && location.hostname !== "localhost") {
+      throw new Error("Camera requires HTTPS");
+    }
 
-// ---------- Scanner loop ----------
-async function beginScanLoop() {
-  // iOS Safari: ZXing ONLY (skip BarcodeDetector entirely)
-  if (isIOS()) {
-    setScanStatus("warn", "Scanner loading (iOS)…");
-    await loadZXing();
-    setScanStatus(null, "Scanner ready.");
+    // Request rear camera
+    const constraints = {
+      audio: false,
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      }
+    };
+
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject = stream;
+    await video.play();
+
+    // Keep track reference (for torch + stop)
+    videoTrack = stream.getVideoTracks?.()[0] || null;
+
+    return true;
+  }
+
+  function stopCamera() {
+    try {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = null;
+      scanning = false;
+
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+      }
+      stream = null;
+      videoTrack = null;
+      torchOn = false;
+
+      const video = $("#wvtVideo");
+      if (video) video.srcObject = null;
+    } catch (e) {
+      console.warn("stopCamera error", e);
+    }
+  }
+
+  async function setTorch(enabled) {
+    if (!videoTrack) return false;
+    const caps = videoTrack.getCapabilities?.();
+    if (!caps || !caps.torch) return false;
 
     try {
-      const reader = new zxing.BrowserMultiFormatReader();
-      zxing._reader = reader;
+      await videoTrack.applyConstraints({ advanced: [{ torch: enabled }] });
+      torchOn = enabled;
+      return true;
+    } catch (e) {
+      console.warn("Torch failed", e);
+      return false;
+    }
+  }
 
-      // Prefer continuously method if present
-      if (reader.decodeFromVideoElementContinuously) {
-        reader.decodeFromVideoElementContinuously(ui.video, (result) => {
-          if (!scanning) return;
-          if (result?.getText) successScan(result.getText());
-        });
-      } else {
-        reader.decodeFromVideoDevice(null, ui.video, (result) => {
-          if (!scanning) return;
-          if (result?.getText) successScan(result.getText());
-        });
+  function normalizeValue(raw) {
+    return String(raw || "").trim();
+  }
+
+  function logScan(value, source) {
+    const clean = normalizeValue(value);
+    if (!clean) return;
+
+    const logs = loadLogs();
+    logs.push({
+      at: nowIso(),
+      value: clean,
+      source: source || "scan"
+    });
+    saveLogs(logs);
+
+    const last = $("#wvtLast");
+    if (last) last.textContent = clean;
+
+    setBadge("ok", "Scan accepted ✅");
+  }
+
+  function shouldAccept(value) {
+    const v = normalizeValue(value);
+    if (!v) return false;
+
+    // Prevent rapid repeats (same code within 3 seconds)
+    const t = Date.now();
+    if (v === lastValue && (t - lastAt) < 3000) return false;
+    lastValue = v;
+    lastAt = t;
+    return true;
+  }
+
+  async function scanLoop() {
+    if (!scanning) return;
+    const video = $("#wvtVideo");
+    if (!video) return;
+
+    try {
+      // detector.detect expects an ImageBitmapSource (video works)
+      const codes = await detector.detect(video);
+
+      if (codes && codes.length) {
+        const raw = codes[0].rawValue || codes[0].data || "";
+        if (shouldAccept(raw)) {
+          logScan(raw, "camera");
+          // Optional: pause briefly after accept so you don't double-log
+          await new Promise(r => setTimeout(r, 600));
+        }
       }
     } catch (e) {
-      console.error(e);
-      setScanStatus("bad", "Scanner failed to start (iOS).");
-      alert("Scanner failed on iOS. Try force-closing Safari, then reload.");
+      // Some frames may throw; don't hard-fail the loop
+      // But if it's persistent, show an error once.
+      // We keep it quiet to avoid annoying popups.
     }
 
-    return;
+    rafId = requestAnimationFrame(scanLoop);
   }
 
-  // Non-iOS: Try BarcodeDetector first, fallback to ZXing
-  if ("BarcodeDetector" in window) {
-    const formats = ["qr_code","code_128","code_39","ean_13","ean_8","upc_a","upc_e","itf"];
-    let detector = null;
+  function setButtons(state) {
+    const startBtn = $("#wvtStartBtn");
+    const stopBtn = $("#wvtStopBtn");
+    const torchBtn = $("#wvtTorchBtn");
 
-    try {
-      detector = new BarcodeDetector({ formats });
-    } catch {
-      detector = null;
-    }
+    if (!startBtn || !stopBtn || !torchBtn) return;
 
-    if (detector) {
-      setScanStatus(null, "Scanner ready (native).");
+    if (state === "running") {
+      startBtn.disabled = true;
+      startBtn.style.opacity = "0.6";
 
-      const tick = async () => {
-        if (!scanning) return;
+      stopBtn.disabled = false;
+      stopBtn.style.opacity = "1";
+      stopBtn.style.color = "#fff";
+      stopBtn.style.background = "rgba(40,40,40,.55)";
 
-        try {
-          const bmp = await createImageBitmap(ui.video);
-          const barcodes = await detector.detect(bmp);
-          bmp.close?.();
-
-          if (barcodes?.length) {
-            successScan(barcodes[0].rawValue || barcodes[0].value || "");
-          }
-        } catch {
-          // ignore frame errors
-        }
-
-        scanTimer = setTimeout(tick, 250);
-      };
-
-      tick();
-      return;
-    }
-  }
-
-  // Fallback ZXing
-  setScanStatus("warn", "Loading fallback scanner…");
-  await loadZXing();
-  setScanStatus(null, "Scanner ready (fallback).");
-
-  try {
-    const reader = new zxing.BrowserMultiFormatReader();
-    zxing._reader = reader;
-
-    if (reader.decodeFromVideoElementContinuously) {
-      reader.decodeFromVideoElementContinuously(ui.video, (result) => {
-        if (!scanning) return;
-        if (result?.getText) successScan(result.getText());
-      });
+      // torch enabled only if track supports it; we’ll update after camera starts
     } else {
-      reader.decodeFromVideoDevice(null, ui.video, (result) => {
-        if (!scanning) return;
-        if (result?.getText) successScan(result.getText());
-      });
+      startBtn.disabled = false;
+      startBtn.style.opacity = "1";
+
+      stopBtn.disabled = true;
+      stopBtn.style.opacity = "0.6";
+      stopBtn.style.color = "#aaa";
+      stopBtn.style.background = "rgba(40,40,40,.25)";
+
+      torchBtn.disabled = true;
+      torchBtn.style.opacity = "0.6";
+      torchBtn.style.color = "#aaa";
+      torchBtn.style.background = "rgba(40,40,40,.25)";
     }
-  } catch (e) {
-    console.error(e);
-    setScanStatus("bad", "Fallback scanner failed to start.");
-    alert("Scanner fallback failed. Try updating browser/device.");
   }
-}
 
-async function loadZXing() {
-  if (zxing) return;
+  function updateTorchButtonAvailability() {
+    const torchBtn = $("#wvtTorchBtn");
+    if (!torchBtn) return;
 
-  // IMPORTANT: dynamic import can fail if CDN blocked.
-  // This is the most common stable ESM CDN URL.
-  const mod = await import("https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/esm/index.min.js");
-  zxing = mod;
-}
+    const caps = videoTrack?.getCapabilities?.();
+    const hasTorch = !!(caps && caps.torch);
 
-// ---------- Init / Events ----------
-function init() {
-  bindUI(); // bind after DOM exists
+    torchBtn.disabled = !hasTorch;
+    torchBtn.style.opacity = hasTorch ? "1" : "0.6";
+    torchBtn.style.color = hasTorch ? "#fff" : "#aaa";
+    torchBtn.style.background = hasTorch ? "rgba(40,40,40,.55)" : "rgba(40,40,40,.25)";
+    torchBtn.textContent = torchOn ? "Torch: ON" : "Torch";
+  }
 
-  setPill();
-  render();
-  setScanStatus(null, "Idle");
+  async function onStart() {
+    try {
+      setBadge("info", "Starting camera…");
+      ensureUI();
 
-  ui.btnStartScan?.addEventListener("click", startCamera);
-  ui.btnStopScan?.addEventListener("click", stopCamera);
+      if (!canUseBarcodeDetector()) {
+        setBadge("err", "Scanner not supported on this iPhone/browser. Use Manual entry.");
+        // Still allow camera preview (optional). But without detector, no scan.
+        await startCamera();
+        setButtons("running");
+        updateTorchButtonAvailability();
+        return;
+      }
 
-  ui.form?.addEventListener("submit", (e) => {
-    e.preventDefault();
+      detector = await buildDetector();
+      await startCamera();
 
-    const unit = ui.unit?.value.trim() || "";
-    const room = ui.room?.value.trim() || "";
-    const bed = ui.bed?.value.trim() || "";
-    const serial = ui.serial?.value.trim() || "";
+      scanning = true;
+      setButtons("running");
+      updateTorchButtonAvailability();
 
-    if (!unit || !room || !bed || !serial) {
-      alert("Fill Unit, Room, Bed, and Serial (or scan) before logging.");
+      setBadge("info", "Aim at barcode/QR…");
+      rafId = requestAnimationFrame(scanLoop);
+    } catch (e) {
+      console.error(e);
+      stopCamera();
+      setButtons("stopped");
+
+      // Clean user message for common errors
+      const msg = (e && e.message) ? e.message : String(e);
+
+      if (/Permission|denied/i.test(msg)) {
+        setBadge("err", "Camera permission denied. Enable camera for this site in Safari settings.");
+      } else if (/HTTPS/i.test(msg)) {
+        setBadge("err", "Camera requires HTTPS.");
+      } else {
+        setBadge("err", `Camera failed: ${msg}`);
+      }
+    }
+  }
+
+  function onStop() {
+    stopCamera();
+    setButtons("stopped");
+    setBadge("info", "Stopped");
+  }
+
+  async function onTorch() {
+    const torchBtn = $("#wvtTorchBtn");
+    if (!torchBtn) return;
+
+    const next = !torchOn;
+    const ok = await setTorch(next);
+    if (ok) {
+      torchBtn.textContent = next ? "Torch: ON" : "Torch";
+      setBadge("info", next ? "Torch on" : "Torch off");
+    } else {
+      setBadge("err", "Torch not available on this device.");
+    }
+  }
+
+  function onManualSave() {
+    const inp = $("#wvtManual");
+    if (!inp) return;
+    const v = normalizeValue(inp.value);
+    if (!v) {
+      setBadge("err", "Enter a serial/QR value first.");
+      return;
+    }
+    inp.value = "";
+    logScan(v, "manual");
+  }
+
+  function onExport() {
+    const logs = loadLogs();
+    if (!logs.length) {
+      setBadge("err", "No logs to export.");
       return;
     }
 
-    addLog({
-      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random(),
-      timestamp: nowIso(),
-      unit,
-      room,
-      bed,
-      serial,
+    const header = ["timestamp", "value", "source"];
+    const rows = logs.map(r => [r.at, r.value, r.source].map(escapeCsv).join(","));
+    const csv = header.join(",") + "\n" + rows.join("\n");
+    const filename = `wound-vac-log_${new Date().toISOString().slice(0,10)}.csv`;
+
+    downloadText(filename, csv);
+    setBadge("ok", "Exported ✅");
+  }
+
+  function onClear() {
+    const ok = confirm("Clear all local logs on this device?");
+    if (!ok) return;
+    localStorage.removeItem(STORAGE_KEY);
+    const last = $("#wvtLast");
+    if (last) last.textContent = "—";
+    setBadge("ok", "Cleared ✅");
+  }
+
+  // ---------- Init ----------
+  function wire() {
+    ensureUI();
+
+    const startBtn = $("#wvtStartBtn");
+    const stopBtn = $("#wvtStopBtn");
+    const torchBtn = $("#wvtTorchBtn");
+    const manualBtn = $("#wvtManualSave");
+    const exportBtn = $("#wvtExportBtn");
+    const clearBtn = $("#wvtClearBtn");
+
+    startBtn?.addEventListener("click", onStart);
+    stopBtn?.addEventListener("click", onStop);
+    torchBtn?.addEventListener("click", onTorch);
+    manualBtn?.addEventListener("click", onManualSave);
+    exportBtn?.addEventListener("click", onExport);
+    clearBtn?.addEventListener("click", onClear);
+
+    // Show last scan if exists
+    const logs = loadLogs();
+    if (logs.length) {
+      const last = logs[logs.length - 1];
+      const lastEl = $("#wvtLast");
+      if (lastEl) lastEl.textContent = last.value || "—";
+    }
+
+    // Stop camera if user backgrounds tab
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden && scanning) onStop();
     });
 
-    if (ui.serial) ui.serial.value = "";
-    setScanStatus("good", "Logged ✅ Ready.");
-  });
+    setBadge("info", "Ready");
+  }
 
-  ui.btnClear?.addEventListener("click", () => {
-    if (ui.serial) ui.serial.value = "";
-    setScanStatus(null, "Idle");
-  });
-
-  ui.btnExport?.addEventListener("click", () => {
-    const logs = loadLogs();
-    const csv = toCsv(logs);
-    const name = `wound-vac-tracker_${new Date().toISOString().slice(0, 10)}.csv`;
-    downloadText(name, csv, "text/csv");
-  });
-
-  ui.btnWipe?.addEventListener("click", () => {
-    const ok = confirm("Wipe ALL local data on this device?");
-    if (ok) wipeAll();
-  });
-
-  ui.search?.addEventListener("input", render);
-
-  // Lifecycle
-  window.addEventListener("pagehide", hardReleaseCamera);
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) softStopScan();
-  });
-}
-
-window.addEventListener("load", init);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", wire);
+  } else {
+    wire();
+  }
+})();
