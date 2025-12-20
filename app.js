@@ -5,50 +5,101 @@
    - LocalStorage logs + KPIs + table + search + export + wipe
 */
 
-// --- BIG GREEN "ACCEPTED ✅" OVERLAY (no HTML/CSS needed) ---
-function showAccepted(msg = "ACCEPTED") {
-  let wrap = document.getElementById("wvtAcceptedOverlay");
-  if (!wrap) {
-    wrap = document.createElement("div");
-    wrap.id = "wvtAcceptedOverlay";
-    wrap.style.cssText =
-      "position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:99999;pointer-events:none;";
-    wrap.innerHTML = `
-      <div id="wvtAcceptedBox" style="
-        background:rgba(10,80,40,.92);
-        border:3px solid #3cff9e;
-        border-radius:20px;
-        padding:28px 36px;
-        text-align:center;
-        box-shadow:0 0 30px rgba(60,255,160,.6);
-        transform:scale(.95);
-        opacity:0;
-        transition:opacity .12s ease, transform .12s ease;">
-        <div style="font-size:64px;line-height:1;color:#3cff9e;">✔</div>
-        <div id="wvtAcceptedText" style="margin-top:8px;font-size:32px;font-weight:800;letter-spacing:2px;color:#eafff3;">ACCEPTED</div>
-      </div>
-    `;
-    document.body.appendChild(wrap);
-  }
-
-  const text = document.getElementById("wvtAcceptedText");
-  if (text) text.textContent = msg;
-
-  const box = document.getElementById("wvtAcceptedBox");
-  wrap.style.display = "flex";
-  requestAnimationFrame(() => {
-    if (box) { box.style.opacity = "1"; box.style.transform = "scale(1)"; }
-  });
-
-  clearTimeout(showAccepted._t);
-  showAccepted._t = setTimeout(() => {
-    if (box) { box.style.opacity = "0"; box.style.transform = "scale(.95)"; }
-    setTimeout(() => (wrap.style.display = "none"), 130);
-  }, 900);
-}
-
 (() => {
   "use strict";
+
+  // -------------------------
+  // BIG GREEN "LOGGED ✅" OVERLAY (no HTML/CSS needed)
+  // -------------------------
+  function showAccepted(msg = "LOGGED") {
+    let wrap = document.getElementById("wvtAcceptedOverlay");
+    if (!wrap) {
+      wrap = document.createElement("div");
+      wrap.id = "wvtAcceptedOverlay";
+      wrap.style.cssText =
+        "position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:99999;pointer-events:none;";
+      wrap.innerHTML = `
+        <div id="wvtAcceptedBox" style="
+          background:rgba(10,80,40,.92);
+          border:3px solid #3cff9e;
+          border-radius:20px;
+          padding:28px 36px;
+          text-align:center;
+          box-shadow:0 0 30px rgba(60,255,160,.6);
+          transform:scale(.95);
+          opacity:0;
+          transition:opacity .12s ease, transform .12s ease;">
+          <div style="font-size:64px;line-height:1;color:#3cff9e;">✔</div>
+          <div id="wvtAcceptedText" style="margin-top:8px;font-size:32px;font-weight:800;letter-spacing:2px;color:#eafff3;">LOGGED</div>
+        </div>
+      `;
+      document.body.appendChild(wrap);
+    }
+
+    const text = document.getElementById("wvtAcceptedText");
+    if (text) text.textContent = msg;
+
+    const box = document.getElementById("wvtAcceptedBox");
+    wrap.style.display = "flex";
+    requestAnimationFrame(() => {
+      if (box) {
+        box.style.opacity = "1";
+        box.style.transform = "scale(1)";
+      }
+    });
+
+    clearTimeout(showAccepted._t);
+    showAccepted._t = setTimeout(() => {
+      if (box) {
+        box.style.opacity = "0";
+        box.style.transform = "scale(.95)";
+      }
+      setTimeout(() => (wrap.style.display = "none"), 130);
+    }, 900);
+  }
+
+  // -------------------------
+  // OPTIONAL feedback (beep + best-effort haptic)
+  // NOTE: iOS may ignore vibrate; beep may be muted by silent switch.
+  // -------------------------
+  let audioCtx = null;
+
+  async function feedback() {
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+
+      if (audioCtx.state === "suspended") {
+        await audioCtx.resume();
+      }
+
+      // iOS unlock tick (near silent)
+      const unlockOsc = audioCtx.createOscillator();
+      const unlockGain = audioCtx.createGain();
+      unlockGain.gain.value = 0.00001;
+      unlockOsc.connect(unlockGain);
+      unlockGain.connect(audioCtx.destination);
+      unlockOsc.start();
+      unlockOsc.stop(audioCtx.currentTime + 0.02);
+
+      // confirmation beep
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = "sine";
+      o.frequency.value = 880;
+
+      g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.18, audioCtx.currentTime + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.12);
+
+      o.connect(g);
+      g.connect(audioCtx.destination);
+      o.start();
+      o.stop(audioCtx.currentTime + 0.13);
+
+      // best effort vibrate (often ignored on iOS Safari)
+      if (navigator.vibrate) navigator.vibrate([20, 30, 20]);
+    } catch {}
+  }
 
   // -------------------------
   // DOM helpers
@@ -58,8 +109,6 @@ function showAccepted(msg = "ACCEPTED") {
   // Elements (from your HTML)
   const securePill = $("securePill");
 
-  const beepOnScan = { value: true };
-  const hapticOnScan = { value: true };
   const btnStartScan = $("btnStartScan");
   const btnStopScan = $("btnStopScan");
   const videoEl = $("video");
@@ -90,51 +139,6 @@ function showAccepted(msg = "ACCEPTED") {
   const STORAGE_KEY = "wvt_logs_v3";
   const MAX_LOGS = 3000;
 
-  let audioCtx = null;
-
-async function feedback() {
-  try {
-    // --- AUDIO (beep) ---
-    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-
-    if (audioCtx.state === "suspended") {
-      await audioCtx.resume();
-    }
-
-    // iOS unlock tick (near silent)
-    const unlockOsc = audioCtx.createOscillator();
-    const unlockGain = audioCtx.createGain();
-    unlockGain.gain.value = 0.00001;
-    unlockOsc.connect(unlockGain);
-    unlockGain.connect(audioCtx.destination);
-    unlockOsc.start();
-    unlockOsc.stop(audioCtx.currentTime + 0.02);
-
-    // Actual confirmation beep
-    const o = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
-
-    o.type = "sine";
-    o.frequency.value = 880; // hospital-safe tone
-
-    g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.18, audioCtx.currentTime + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.12);
-
-    o.connect(g);
-    g.connect(audioCtx.destination);
-
-    o.start();
-    o.stop(audioCtx.currentTime + 0.13);
-
-    // --- HAPTIC (best effort; iOS may ignore) ---
-    if (navigator.vibrate) {
-      navigator.vibrate([20, 30, 20]);
-    }
-  } catch {
-    // fail silently (hospital-safe)
-  }
-}
   function loadLogs() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -180,7 +184,7 @@ async function feedback() {
   }
 
   // -------------------------
-  // UI status (green check)
+  // UI status
   // -------------------------
   function setScanStatus(type, msg) {
     if (!scanText || !scanDot) return;
@@ -252,8 +256,10 @@ async function feedback() {
 
     renderAll();
     setScanStatus("ok", "Logged ✅");
-    showAccepted("LOGGED"); // or "ACCEPTED"
+    showAccepted("LOGGED");
+    feedback(); // optional; safe if silent
     return true;
+  }
 
   // -------------------------
   // Table + KPIs
@@ -285,14 +291,7 @@ async function feedback() {
     for (const row of filtered) {
       const tr = document.createElement("tr");
 
-      const cells = [
-        fmtTime(row.at),
-        row.unit,
-        row.room,
-        row.bed,
-        row.serial,
-      ];
-
+      const cells = [fmtTime(row.at), row.unit, row.room, row.bed, row.serial];
       for (const c of cells) {
         const td = document.createElement("td");
         td.textContent = c;
@@ -399,7 +398,6 @@ async function feedback() {
   let lastValue = "";
   let lastAtMs = 0;
 
-  // Offscreen canvas for frame grabs
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
@@ -452,56 +450,14 @@ async function feedback() {
     return val;
   }
 
-  function haptic() {
-  if (!hapticOnScan.value) return;
-  try {
-    if (navigator.vibrate) {
-      navigator.vibrate([20, 30, 20]); // short double-tap
-    }
-  } catch {}
-}
-
-function beep() {
-  if (!beepOnScan.value) return;
-
-  try {
-    // Create or reuse AudioContext (must be triggered after user gesture once)
-    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-
-    // If iOS suspended it, resume (requires gesture; Start Camera click counts)
-    if (audioCtx.state === "suspended") {
-      audioCtx.resume?.();
-    }
-
-    const o = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
-
-    o.type = "sine";          // clean hospital-friendly tone
-    o.frequency.value = 880;  // beep pitch (Hz)
-
-    // quick, subtle envelope
-    g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.12, audioCtx.currentTime + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.12);
-
-    o.connect(g);
-    g.connect(audioCtx.destination);
-
-    o.start();
-    o.stop(audioCtx.currentTime + 0.13);
-  } catch {}
-}
-
   function scanLoop() {
     if (!scanning) return;
 
     try {
-      // Only scan when video is ready
       const w = videoEl.videoWidth || 0;
       const h = videoEl.videoHeight || 0;
 
       if (w > 0 && h > 0) {
-        // Scale down for speed (QR works fine smaller)
         const targetW = 640;
         const scale = Math.min(1, targetW / w);
         const cw = Math.floor(w * scale);
@@ -519,7 +475,6 @@ function beep() {
           if (val) {
             if (serialEl) serialEl.value = val;
             setScanStatus("ok", "Scan accepted ✅");
-            haptic();
 
             if (autoLogEl?.checked) {
               const fv = getFormValues();
@@ -532,7 +487,6 @@ function beep() {
               }
             }
 
-            // brief pause to avoid re-scanning same QR instantly
             setTimeout(() => {
               if (scanning) rafId = requestAnimationFrame(scanLoop);
             }, 650);
@@ -540,9 +494,7 @@ function beep() {
           }
         }
       }
-    } catch {
-      // ignore frame errors
-    }
+    } catch {}
 
     rafId = requestAnimationFrame(scanLoop);
   }
@@ -558,6 +510,9 @@ function beep() {
         btnStopScan.disabled = true;
         return;
       }
+
+      // unlock audio on user gesture (best chance beep works)
+      await feedback();
 
       setScanStatus("info", "Starting camera…");
       await startCamera();
