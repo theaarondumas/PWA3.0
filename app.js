@@ -16,6 +16,8 @@
   // Elements (from your HTML)
   const securePill = $("securePill");
 
+  const beepOnScan = { value: true };
+  const hapticOnScan = { value: true };
   const btnStartScan = $("btnStartScan");
   const btnStopScan = $("btnStopScan");
   const videoEl = $("video");
@@ -364,11 +366,44 @@
   }
 
   function haptic() {
-    // light tap on successful scan (iOS supports this in many cases)
-    try {
-      navigator.vibrate?.(25);
-    } catch {}
-  }
+  if (!hapticOnScan.value) return;
+  try {
+    if (navigator.vibrate) {
+      navigator.vibrate([20, 30, 20]); // short double-tap
+    }
+  } catch {}
+}
+
+function beep() {
+  if (!beepOnScan.value) return;
+
+  try {
+    // Create or reuse AudioContext (must be triggered after user gesture once)
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+
+    // If iOS suspended it, resume (requires gesture; Start Camera click counts)
+    if (audioCtx.state === "suspended") {
+      audioCtx.resume?.();
+    }
+
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+
+    o.type = "sine";          // clean hospital-friendly tone
+    o.frequency.value = 880;  // beep pitch (Hz)
+
+    // quick, subtle envelope
+    g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.12, audioCtx.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.12);
+
+    o.connect(g);
+    g.connect(audioCtx.destination);
+
+    o.start();
+    o.stop(audioCtx.currentTime + 0.13);
+  } catch {}
+}
 
   function scanLoop() {
     if (!scanning) return;
