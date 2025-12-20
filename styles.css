@@ -393,16 +393,25 @@ td.actions { width: 1%; white-space: nowrap; }
 
 /* === iPhone: Scan is full-screen until a scan happens === */
 @media (max-width:480px){
+  body.scanOnly .top,
   body.scanOnly .grid > .card:nth-child(2),
   body.scanOnly .grid > .card:nth-child(3),
-  body.scanOnly .foot{display:none}
+  body.scanOnly .foot { display:none }
 
-  body.scanOnly .grid{padding:0;gap:0}
+  body.scanOnly .grid { padding:0; gap:0 }
+
   body.scanOnly .grid>.card:first-child{
-    border-radius:0;border-left:0;border-right:0;border-bottom:0;
-    padding:14px;min-height:calc(100vh - 72px)
+    border-radius:0;
+    border:0;
+    padding:14px;
+    min-height:100vh;   /* TRUE full screen now */
   }
-  body.scanOnly .videoWrap{aspect-ratio:auto;height:62vh;border-radius:16px}
+
+  body.scanOnly .videoWrap{
+    aspect-ratio:auto;
+    height:70vh;        /* bigger camera */
+    border-radius:16px;
+  }
 
   table{min-width:0;width:100%}
 }
