@@ -5,6 +5,48 @@
    - LocalStorage logs + KPIs + table + search + export + wipe
 */
 
+// --- BIG GREEN "ACCEPTED ✅" OVERLAY (no HTML/CSS needed) ---
+function showAccepted(msg = "ACCEPTED") {
+  let wrap = document.getElementById("wvtAcceptedOverlay");
+  if (!wrap) {
+    wrap = document.createElement("div");
+    wrap.id = "wvtAcceptedOverlay";
+    wrap.style.cssText =
+      "position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:99999;pointer-events:none;";
+    wrap.innerHTML = `
+      <div id="wvtAcceptedBox" style="
+        background:rgba(10,80,40,.92);
+        border:3px solid #3cff9e;
+        border-radius:20px;
+        padding:28px 36px;
+        text-align:center;
+        box-shadow:0 0 30px rgba(60,255,160,.6);
+        transform:scale(.95);
+        opacity:0;
+        transition:opacity .12s ease, transform .12s ease;">
+        <div style="font-size:64px;line-height:1;color:#3cff9e;">✔</div>
+        <div id="wvtAcceptedText" style="margin-top:8px;font-size:32px;font-weight:800;letter-spacing:2px;color:#eafff3;">ACCEPTED</div>
+      </div>
+    `;
+    document.body.appendChild(wrap);
+  }
+
+  const text = document.getElementById("wvtAcceptedText");
+  if (text) text.textContent = msg;
+
+  const box = document.getElementById("wvtAcceptedBox");
+  wrap.style.display = "flex";
+  requestAnimationFrame(() => {
+    if (box) { box.style.opacity = "1"; box.style.transform = "scale(1)"; }
+  });
+
+  clearTimeout(showAccepted._t);
+  showAccepted._t = setTimeout(() => {
+    if (box) { box.style.opacity = "0"; box.style.transform = "scale(.95)"; }
+    setTimeout(() => (wrap.style.display = "none"), 130);
+  }, 900);
+}
+
 (() => {
   "use strict";
 
