@@ -390,3 +390,19 @@ td.actions { width: 1%; white-space: nowrap; }
   /* Reduce footer footprint */
   .foot { font-size: 13px; padding: 12px; text-align: center; }
 }
+
+/* === iPhone: Scan is full-screen until a scan happens === */
+@media (max-width:480px){
+  body.scanOnly .grid > .card:nth-child(2),
+  body.scanOnly .grid > .card:nth-child(3),
+  body.scanOnly .foot{display:none}
+
+  body.scanOnly .grid{padding:0;gap:0}
+  body.scanOnly .grid>.card:first-child{
+    border-radius:0;border-left:0;border-right:0;border-bottom:0;
+    padding:14px;min-height:calc(100vh - 72px)
+  }
+  body.scanOnly .videoWrap{aspect-ratio:auto;height:62vh;border-radius:16px}
+
+  table{min-width:0;width:100%}
+}
