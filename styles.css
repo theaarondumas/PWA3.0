@@ -320,57 +320,73 @@ td.actions { width: 1%; white-space: nowrap; }
   }
 }
 
-/* =========================================================
-   CAMERA-FIRST MOBILE MODE (iPhone 11 friendly)
-   - Scan becomes full-screen hero
-   ========================================================= */
+/* =========================================
+   iPhone Camera-First Layout (Full Screen)
+   ========================================= */
 @media (max-width: 480px) {
 
-  /* match your HTML selectors */
-  .top { padding: 16px 16px 12px; }
-  .grid { display: flex; flex-direction: column; gap: 16px; padding: 12px; }
-  .card { padding: 16px; border-radius: 16px; }
+  /* App-like spacing */
+  .top { padding: 14px 14px 10px; }
+  .grid { display: flex; flex-direction: column; gap: 14px; padding: 12px; }
+  .card { padding: 14px; border-radius: 16px; }
 
-  /* Make the first card (Scan) feel like the main screen */
-  .grid > .card:first-child {
-    padding: 16px;
+  /* Make SCAN the hero */
+  .grid > section:nth-child(1) {
+    padding: 14px;
   }
 
-  /* Bigger headers */
-  .top h1 { font-size: 26px; margin: 0 0 6px 0; }
-  .sub { font-size: 14px; opacity: 0.85; }
-
-  /* Buttons + inputs feel native */
-  .btn { font-size: 18px; padding: 14px 18px; border-radius: 14px; }
-  input { font-size: 18px; padding: 14px; border-radius: 12px; }
-  label { font-size: 14px; margin-bottom: 4px; }
-
-  /* Camera-first: big viewfinder */
+  /* Big camera view (uses real screen height) */
   .videoWrap {
-    aspect-ratio: auto;                 /* override desktop */
-    height: 58vh;                       /* big camera view */
+    aspect-ratio: auto;          /* override desktop ratio */
+    height: 62vh;                /* hero camera */
     border-radius: 16px;
-    overflow: hidden;
   }
 
-  video { width: 100%; height: 100%; object-fit: cover; }
+  /* Bigger reticle + hint */
+  .reticle {
+    width: 92%;
+    height: 62%;
+    border-width: 3px;
+    border-radius: 16px;
+  }
+  .hint {
+    font-size: 15px;
+    padding: 7px 12px;
+  }
 
-  /* Reticle + hint bigger */
-  .reticle { width: 92%; height: 62%; border-width: 3px; }
-  .hint { font-size: 16px; padding: 8px 14px; bottom: 12px; }
+  /* Controls feel like native */
+  h1 { font-size: 26px; }
+  h2 { font-size: 22px; }
 
-  /* Status becomes more legible */
-  .scanStatus { font-size: 16px; padding: 12px; }
+  .sub { font-size: 14px; }
 
-  /* Stack Unit/Room/Bed vertically */
+  .btn {
+    font-size: 18px;
+    padding: 14px 18px;
+    border-radius: 14px;
+  }
+
+  input {
+    font-size: 18px;
+    padding: 14px 14px;
+    border-radius: 12px;
+  }
+
+  label { font-size: 14px; }
+
+  /* Keep form fields stacked (easy thumbs) */
   .row3 { display: flex; flex-direction: column; gap: 12px; }
 
-  /* Table stops feeling desktop */
-  table { min-width: 0; width: 100%; }
-  .tableWrap { max-height: 42vh; overflow-y: auto; }
-  th, td { padding: 10px 8px; }
-  table { font-size: 14px; }
+  /* Make scan status readable */
+  .scanStatus { font-size: 16px; padding: 12px; }
 
-  /* Footer tighter */
-  .foot { font-size: 13px; padding: 14px; text-align: center; }
+  /* Make table not force desktop width */
+  table { min-width: 0; width: 100%; }
+  thead th, tbody td { padding: 10px 8px; }
+
+  /* Keep dashboard usable but not huge */
+  .tableWrap { max-height: 40vh; overflow-y: auto; }
+
+  /* Reduce footer footprint */
+  .foot { font-size: 13px; padding: 12px; text-align: center; }
 }
