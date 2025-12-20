@@ -1,12 +1,8 @@
-/* Wound Vac Tracker (PHI-Free) — Safari-safe (NO modules / NO imports)
-   Works with your provided index.html IDs.
-   Features:
-   - Rear camera start/stop
-   - BarcodeDetector scanning when supported
-   - Green "accepted" status + fills Serial input
-   - Optional auto-log after scan
-   - Manual log form + clear
-   - LocalStorage logs, dashboard KPIs, table, search, export CSV, wipe
+/* Wound Vac Tracker (PHI-Free) — iOS Safari QR Scanner (jsQR)
+   - NO modules / NO imports
+   - QR-only scanning via jsQR (global)
+   - Fills Serial field + optional auto-log
+   - LocalStorage logs + KPIs + table + search + export + wipe
 */
 
 (() => {
@@ -24,7 +20,6 @@
   const btnStopScan = $("btnStopScan");
   const videoEl = $("video");
 
-  const scanStatus = $("scanStatus");
   const scanDot = $("scanDot");
   const scanText = $("scanText");
   const autoLogEl = $("autoLog");
@@ -48,7 +43,7 @@
   // -------------------------
   // Storage
   // -------------------------
-  const STORAGE_KEY = "wvt_logs_v2"; // bump version safely
+  const STORAGE_KEY = "wvt_logs_v3";
   const MAX_LOGS = 3000;
 
   function loadLogs() {
@@ -63,8 +58,7 @@
 
   function saveLogs(logs) {
     try {
-      const clipped = logs.slice(-MAX_LOGS);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(clipped));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(logs.slice(-MAX_LOGS)));
     } catch (e) {
       console.warn("saveLogs failed", e);
     }
@@ -100,8 +94,6 @@
   // UI status (green check)
   // -------------------------
   function setScanStatus(type, msg) {
-    // type: idle | info | ok | err
-    // You have .dot and text; we'll color dot via inline style to avoid CSS dependency
     if (!scanText || !scanDot) return;
 
     scanText.textContent = msg;
@@ -115,7 +107,6 @@
 
     scanDot.style.background = colors[type] || colors.idle;
 
-    // Optional: subtle pulse on ok
     if (type === "ok") {
       scanDot.style.boxShadow = "0 0 12px rgba(90,255,160,0.55)";
       setTimeout(() => (scanDot.style.boxShadow = "none"), 700);
@@ -131,22 +122,21 @@
     if (!securePill) return;
     const isSecure = location.protocol === "https:" || location.hostname === "localhost";
     securePill.textContent = isSecure ? "HTTPS: secure ✅" : "HTTPS: NOT secure ⚠️";
-    securePill.style.opacity = "1";
   }
 
   // -------------------------
   // Logging
   // -------------------------
-  function normalizeSerial(v) {
+  function normalize(v) {
     return String(v || "").trim();
   }
 
   function getFormValues() {
     return {
-      unit: String(unitEl?.value || "").trim(),
-      room: String(roomEl?.value || "").trim(),
-      bed: String(bedEl?.value || "").trim(),
-      serial: normalizeSerial(serialEl?.value),
+      unit: normalize(unitEl?.value),
+      room: normalize(roomEl?.value),
+      bed: normalize(bedEl?.value),
+      serial: normalize(serialEl?.value),
     };
   }
 
@@ -157,25 +147,18 @@
       if (bedEl) bedEl.value = "";
     }
     if (serialEl) serialEl.value = "";
-    if (serialEl) serialEl.focus();
+    serialEl?.focus?.();
   }
 
   function addLogEntry({ unit, room, bed, serial, source }) {
-    const cleanSerial = normalizeSerial(serial);
-    if (!unit || !room || !bed || !cleanSerial) {
+    const s = normalize(serial);
+    if (!unit || !room || !bed || !s) {
       setScanStatus("err", "Missing Unit/Room/Bed/Serial");
       return false;
     }
 
     const logs = loadLogs();
-    logs.push({
-      at: nowIso(),
-      unit,
-      room,
-      bed,
-      serial: cleanSerial,
-      source: source || "manual",
-    });
+    logs.push({ at: nowIso(), unit, room, bed, serial: s, source: source || "manual" });
     saveLogs(logs);
 
     renderAll();
@@ -189,14 +172,8 @@
   function computeKPIs(logs) {
     const total = logs.length;
     const today = logs.filter((x) => isToday(x.at)).length;
-
-    const unitSet = new Set();
-    for (const x of logs) {
-      if (x.unit) unitSet.add(x.unit);
-    }
-    const units = unitSet.size;
-
-    return { total, today, units };
+    const unitSet = new Set(logs.map((x) => x.unit).filter(Boolean));
+    return { total, today, units: unitSet.size };
   }
 
   function matchesSearch(log, q) {
@@ -207,9 +184,8 @@
 
   function renderTable(logs) {
     if (!tbody) return;
-    const q = String(searchEl?.value || "").trim().toLowerCase();
+    const q = normalize(searchEl?.value).toLowerCase();
 
-    // newest first
     const filtered = logs
       .slice()
       .reverse()
@@ -220,20 +196,19 @@
     for (const row of filtered) {
       const tr = document.createElement("tr");
 
-      const tdTime = document.createElement("td");
-      tdTime.textContent = fmtTime(row.at);
+      const cells = [
+        fmtTime(row.at),
+        row.unit,
+        row.room,
+        row.bed,
+        row.serial,
+      ];
 
-      const tdUnit = document.createElement("td");
-      tdUnit.textContent = row.unit;
-
-      const tdRoom = document.createElement("td");
-      tdRoom.textContent = row.room;
-
-      const tdBed = document.createElement("td");
-      tdBed.textContent = row.bed;
-
-      const tdSerial = document.createElement("td");
-      tdSerial.textContent = row.serial;
+      for (const c of cells) {
+        const td = document.createElement("td");
+        td.textContent = c;
+        tr.appendChild(td);
+      }
 
       const tdAct = document.createElement("td");
       const delBtn = document.createElement("button");
@@ -242,12 +217,6 @@
       delBtn.textContent = "Delete";
       delBtn.addEventListener("click", () => deleteRow(row));
       tdAct.appendChild(delBtn);
-
-      tr.appendChild(tdTime);
-      tr.appendChild(tdUnit);
-      tr.appendChild(tdRoom);
-      tr.appendChild(tdBed);
-      tr.appendChild(tdSerial);
       tr.appendChild(tdAct);
 
       tbody.appendChild(tr);
@@ -259,7 +228,6 @@
     if (!ok) return;
 
     const logs = loadLogs();
-    // match by timestamp + serial + location for safety
     const idx = logs.findIndex(
       (x) =>
         x.at === row.at &&
@@ -315,22 +283,12 @@
       setScanStatus("err", "No logs to export");
       return;
     }
-
     const header = ["timestamp", "unit", "room", "bed", "serial", "source"];
     const rows = logs.map((x) =>
-      [
-        x.at,
-        x.unit,
-        x.room,
-        x.bed,
-        x.serial,
-        x.source || "",
-      ].map(escapeCsv).join(",")
+      [x.at, x.unit, x.room, x.bed, x.serial, x.source || ""].map(escapeCsv).join(",")
     );
-
     const csv = header.join(",") + "\n" + rows.join("\n");
-    const filename = `wound-vac-log_${new Date().toISOString().slice(0, 10)}.csv`;
-    downloadText(filename, csv);
+    downloadText(`wound-vac-log_${new Date().toISOString().slice(0, 10)}.csv`, csv);
     setScanStatus("ok", "Exported ✅");
   }
 
@@ -344,137 +302,124 @@
   }
 
   // -------------------------
-  // Scanning (Safari-safe)
+  // QR Scanning via jsQR (iOS Safari friendly)
   // -------------------------
   let stream = null;
-  let track = null;
-  let detector = null;
   let scanning = false;
   let rafId = null;
-
-  // Deduping
-  let lastRaw = "";
+  let lastValue = "";
   let lastAtMs = 0;
 
-  const PREFERRED_FORMATS = [
-    "qr_code",
-    "code_128",
-    "code_39",
-    "ean_13",
-    "ean_8",
-    "upc_a",
-    "upc_e",
-    "itf",
-    "data_matrix",
-    "pdf417",
-  ];
+  // Offscreen canvas for frame grabs
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
-  function canScan() {
-    return "BarcodeDetector" in window;
-  }
-
-  async function buildDetector() {
-    // Safari variations: getSupportedFormats may not exist
-    try {
-      const supported = await window.BarcodeDetector.getSupportedFormats?.();
-      const formats =
-        Array.isArray(supported) && supported.length
-          ? PREFERRED_FORMATS.filter((f) => supported.includes(f))
-          : PREFERRED_FORMATS;
-
-      return new window.BarcodeDetector({ formats: formats.length ? formats : PREFERRED_FORMATS });
-    } catch {
-      // fallback
-      return new window.BarcodeDetector();
-    }
+  function canUseJsQR() {
+    return typeof window.jsQR === "function";
   }
 
   async function startCamera() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error("Camera API not supported");
-    }
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error("Camera API not supported");
     if (location.protocol !== "https:" && location.hostname !== "localhost") {
       throw new Error("Camera requires HTTPS");
     }
     if (!videoEl) throw new Error("Video element missing");
 
-    const constraints = {
+    stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
         facingMode: { ideal: "environment" },
         width: { ideal: 1280 },
         height: { ideal: 720 },
       },
-    };
+    });
 
-    stream = await navigator.mediaDevices.getUserMedia(constraints);
     videoEl.srcObject = stream;
     await videoEl.play();
-
-    track = stream.getVideoTracks?.()[0] || null;
   }
 
   function stopCamera() {
     if (rafId) cancelAnimationFrame(rafId);
     rafId = null;
-
     scanning = false;
 
     try {
-      if (stream) {
-        stream.getTracks().forEach((t) => t.stop());
-      }
+      if (stream) stream.getTracks().forEach((t) => t.stop());
     } catch {}
-
     stream = null;
-    track = null;
 
     if (videoEl) videoEl.srcObject = null;
   }
 
-  function acceptDedup(raw) {
-    const v = normalizeSerial(raw);
-    if (!v) return null;
+  function acceptDedup(v) {
+    const val = normalize(v);
+    if (!val) return null;
 
     const t = Date.now();
-    if (v === lastRaw && t - lastAtMs < 2500) return null;
+    if (val === lastValue && t - lastAtMs < 2500) return null;
 
-    lastRaw = v;
+    lastValue = val;
     lastAtMs = t;
-    return v;
+    return val;
   }
 
-  async function scanLoop() {
+  function haptic() {
+    // light tap on successful scan (iOS supports this in many cases)
+    try {
+      navigator.vibrate?.(25);
+    } catch {}
+  }
+
+  function scanLoop() {
     if (!scanning) return;
 
     try {
-      const codes = await detector.detect(videoEl);
-      if (codes && codes.length) {
-        const raw = codes[0].rawValue || codes[0].data || "";
-        const v = acceptDedup(raw);
-        if (v) {
-          // Fill serial field
-          if (serialEl) serialEl.value = v;
+      // Only scan when video is ready
+      const w = videoEl.videoWidth || 0;
+      const h = videoEl.videoHeight || 0;
 
-          setScanStatus("ok", "Scan accepted ✅");
+      if (w > 0 && h > 0) {
+        // Scale down for speed (QR works fine smaller)
+        const targetW = 640;
+        const scale = Math.min(1, targetW / w);
+        const cw = Math.floor(w * scale);
+        const ch = Math.floor(h * scale);
 
-          // Auto-log if checked and form has required fields
-          if (autoLogEl?.checked) {
-            const fv = getFormValues();
-            // serial already set from scan
-            fv.serial = v;
-            // only auto-log if the location fields exist
-            if (fv.unit && fv.room && fv.bed) {
-              addLogEntry({ ...fv, source: "scan" });
-            } else {
-              // Prompt user to complete location
-              setScanStatus("info", "Scan accepted ✅ — enter Unit/Room/Bed then Log");
+        canvas.width = cw;
+        canvas.height = ch;
+
+        ctx.drawImage(videoEl, 0, 0, cw, ch);
+        const img = ctx.getImageData(0, 0, cw, ch);
+
+        const result = window.jsQR(img.data, cw, ch, { inversionAttempts: "attemptBoth" });
+        if (result?.data) {
+          const val = acceptDedup(result.data);
+          if (val) {
+            if (serialEl) serialEl.value = val;
+            setScanStatus("ok", "Scan accepted ✅");
+            haptic();
+
+            if (autoLogEl?.checked) {
+              const fv = getFormValues();
+              fv.serial = val;
+
+              if (fv.unit && fv.room && fv.bed) {
+                addLogEntry({ ...fv, source: "scan" });
+              } else {
+                setScanStatus("info", "Scan accepted ✅ — enter Unit/Room/Bed then Log");
+              }
             }
+
+            // brief pause to avoid re-scanning same QR instantly
+            setTimeout(() => {
+              if (scanning) rafId = requestAnimationFrame(scanLoop);
+            }, 650);
+            return;
           }
         }
       }
     } catch {
-      // Ignore per-frame errors; Safari can throw occasionally on detect()
+      // ignore frame errors
     }
 
     rafId = requestAnimationFrame(scanLoop);
@@ -485,19 +430,18 @@
       btnStartScan.disabled = true;
       btnStopScan.disabled = false;
 
-      if (!canScan()) {
-        setScanStatus("err", "Scanner not supported on this iPhone/Safari. Use manual entry.");
-        // Still show camera preview if you want:
-        await startCamera();
+      if (!canUseJsQR()) {
+        setScanStatus("err", "QR scanner library not loaded. Refresh once.");
+        btnStartScan.disabled = false;
+        btnStopScan.disabled = true;
         return;
       }
 
       setScanStatus("info", "Starting camera…");
-      detector = await buildDetector();
       await startCamera();
 
       scanning = true;
-      setScanStatus("info", "Aim at barcode / QR");
+      setScanStatus("info", "Aim at QR");
       rafId = requestAnimationFrame(scanLoop);
     } catch (e) {
       console.error(e);
@@ -528,10 +472,7 @@
     e.preventDefault();
     const fv = getFormValues();
     const ok = addLogEntry({ ...fv, source: "manual" });
-    if (ok) {
-      // keep Unit/Room/Bed to speed repeated logging
-      clearForm(true);
-    }
+    if (ok) clearForm(true);
   }
 
   function onClear() {
@@ -540,7 +481,7 @@
   }
 
   // -------------------------
-  // App init / lifecycle
+  // Init / lifecycle
   // -------------------------
   function wire() {
     setSecurePill();
@@ -558,14 +499,12 @@
 
     searchEl?.addEventListener("input", () => renderAll());
 
-    // Stop camera if tab is backgrounded
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {
         try { onStopScan(); } catch {}
       }
     });
 
-    // If user reloads with camera running (rare), ensure stopped
     window.addEventListener("pagehide", () => {
       try { stopCamera(); } catch {}
     });
