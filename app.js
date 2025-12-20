@@ -88,8 +88,10 @@
       o.frequency.value = 880;
 
       g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.18, audioCtx.currentTime + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.12);
+      g.gain.exponentialRampToValueAtTime(0.5, audioCtx.currentTime + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.22);
+      o.stop(audioCtx.currentTime + 0.23);
+      
 
       o.connect(g);
       g.connect(audioCtx.destination);
