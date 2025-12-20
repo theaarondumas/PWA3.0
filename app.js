@@ -48,6 +48,51 @@
   const STORAGE_KEY = "wvt_logs_v3";
   const MAX_LOGS = 3000;
 
+  let audioCtx = null;
+
+async function feedback() {
+  try {
+    // --- AUDIO (beep) ---
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+
+    if (audioCtx.state === "suspended") {
+      await audioCtx.resume();
+    }
+
+    // iOS unlock tick (near silent)
+    const unlockOsc = audioCtx.createOscillator();
+    const unlockGain = audioCtx.createGain();
+    unlockGain.gain.value = 0.00001;
+    unlockOsc.connect(unlockGain);
+    unlockGain.connect(audioCtx.destination);
+    unlockOsc.start();
+    unlockOsc.stop(audioCtx.currentTime + 0.02);
+
+    // Actual confirmation beep
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+
+    o.type = "sine";
+    o.frequency.value = 880; // hospital-safe tone
+
+    g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.18, audioCtx.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.12);
+
+    o.connect(g);
+    g.connect(audioCtx.destination);
+
+    o.start();
+    o.stop(audioCtx.currentTime + 0.13);
+
+    // --- HAPTIC (best effort; iOS may ignore) ---
+    if (navigator.vibrate) {
+      navigator.vibrate([20, 30, 20]);
+    }
+  } catch {
+    // fail silently (hospital-safe)
+  }
+}
   function loadLogs() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
