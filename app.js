@@ -7,6 +7,16 @@
 
 (() => {
   "use strict";
+   // Start in Scan-only mode (mobile)
+try { document.body.classList.add("scanOnly"); } catch {}
+
+function revealAfterCapture() {
+  try {
+    document.body.classList.remove("scanOnly");
+    const logCard = document.querySelector(".grid > .card:nth-child(2)");
+    logCard?.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch {}
+}
 
   // -------------------------
   // BIG GREEN "LOGGED ✅" OVERLAY (no HTML/CSS needed)
@@ -477,6 +487,7 @@
           if (val) {
             if (serialEl) serialEl.value = val;
             setScanStatus("ok", "Scan accepted ✅");
+            revealAfterCapture();
 
             if (autoLogEl?.checked) {
               const fv = getFormValues();
