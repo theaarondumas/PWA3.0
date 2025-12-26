@@ -4,188 +4,147 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#0b0c10" />
-  <title>UnitFlow — Crash Cart</title>
-  <link rel="stylesheet" href="styles.css" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Wound Vac Tracker" />
+
+  <link rel="manifest" href="./manifest.json" />
+
+  <title>Wound Vac Tracker (PHI-Free)</title>
+  <link rel="stylesheet" href="./styles.css" />
 </head>
 
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <div class="brand-title">UnitFlow</div>
-      <div class="brand-sub">Crash Cart Checks • Local-only • PHI-free</div>
+  <header class="top">
+    <div>
+      <h1>Wound Vac Tracker</h1>
+      <p class="sub">PHI-free • Unit / Room / Bed • Scan barcode/QR • Log + Export</p>
     </div>
-    <div class="top-actions">
-      <span class="chip">Providence Holy Cross</span>
-    </div>
+    <div class="pill" id="securePill">HTTPS: checking…</div>
   </header>
 
-  <main class="wrap">
-    <!-- SCREEN: FORM -->
-    <section id="screenForm" class="card">
-      <div class="card-head">
-        <div>
-          <h1>New Crash Cart Check</h1>
-          <p class="muted">
-            Don’t capture faces, patient names, MRNs, or identifiers. Stickers/locks only.
-          </p>
+  <main class="grid">
+    <section class="card">
+      <h2>Scan</h2>
+
+      <div class="row">
+        <button class="btn primary" id="btnStartScan">Start Camera</button>
+        <button class="btn" id="btnStopScan" disabled>Stop</button>
+      </div>
+
+      <div class="videoWrap">
+        <video id="video" playsinline muted></video>
+        <div class="overlay">
+          <div class="reticle"></div>
+          <div class="hint">Aim at barcode / QR</div>
         </div>
       </div>
 
-      <form id="logForm" class="form">
-        <div class="grid2">
-          <label class="field">
-            <span>Your name (CS tech)</span>
-            <input id="techName" type="text" placeholder="e.g., Aaron D." autocomplete="name" required />
-          </label>
+      <div class="scanStatus" id="scanStatus" aria-live="polite">
+        <span class="dot" id="scanDot"></span>
+        <span id="scanText">Idle</span>
+      </div>
 
-          <label class="field">
-            <span>Cart location / ID</span>
-            <input id="cartId" type="text" placeholder="e.g., ED Bay 3 / Cart A" required />
-          </label>
-        </div>
-
-        <div class="grid2">
-          <label class="field">
-            <span>First supply to expire</span>
-            <input id="firstExpire" type="text" placeholder="e.g., Temp pacing cath kit" required />
-          </label>
-
-          <label class="field">
-            <span>Expiration date</span>
-            <input id="expDate" type="date" required />
-          </label>
-        </div>
-
-        <div class="grid2">
-          <label class="field">
-            <span>Lock number (optional)</span>
-            <input id="lockNumber" type="text" placeholder="e.g., 2722470" inputmode="numeric" />
-          </label>
-
-          <label class="field">
-            <span>Notes (optional)</span>
-            <input id="notes" type="text" placeholder="e.g., Seal intact, drawers locked" />
-          </label>
-        </div>
-
-        <label class="field">
-          <span>Crash cart photo (optional)</span>
-          <input id="cartPhoto" type="file" accept="image/*" capture="environment" />
-          <small class="muted">Tip: keep photo tight on stickers/locks.</small>
+      <div class="row">
+        <label class="check">
+          <input type="checkbox" id="autoLog" checked />
+          Auto-log after successful scan
         </label>
+      </div>
 
-        <div id="photoPreviewWrap" class="photoPreview" style="display:none;">
-          <img id="photoPreview" alt="Crash cart photo preview" />
-          <div class="row">
-            <button class="btn ghost" type="button" id="removePhotoBtn">Remove photo</button>
+      <details class="details">
+        <summary>Troubleshooting</summary>
+        <ul>
+          <li>Camera only works on <b>HTTPS</b> (GitHub Pages is HTTPS).</li>
+          <li>Tap <b>Start Camera</b> (required user gesture on iPhone).</li>
+          <li>If it says “Not secure”, you’re not on HTTPS.</li>
+        </ul>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>Log Entry</h2>
+
+      <form id="logForm">
+        <div class="row3">
+          <div>
+            <label>Unit</label>
+            <input id="unit" autocomplete="off" placeholder="e.g., 5W" required />
           </div>
-        </div>
-
-        <!-- DIGITAL STICKER PREVIEW -->
-        <div id="stickerPreview" style="display:none; margin-top:16px;">
-          <div class="labelSticker" aria-label="Digital crash cart sticker">
-            <div class="labelTop">
-              <div class="labelMeta">
-                <div class="labelFacility">Providence Holy Cross</div>
-                <div class="labelDept">Central Department</div>
-                <div class="labelPhone">818-496-1190</div>
-              </div>
-            </div>
-
-            <div class="labelTitle">CRASH CART CHECK</div>
-
-            <div class="labelRow">
-              <div class="labelKey">First supply to expire:</div>
-              <div class="labelVal" id="stFirstExpire">—</div>
-            </div>
-
-            <div class="labelRow">
-              <div class="labelKey">Exp date:</div>
-              <div class="labelVal" id="stExpDate">—</div>
-            </div>
-
-            <div class="labelRow">
-              <div class="labelKey">Check date done:</div>
-              <div class="labelVal" id="stCheckDate">—</div>
-            </div>
-
-            <div class="labelRow">
-              <div class="labelKey">CS tech:</div>
-              <div class="labelVal" id="stTech">—</div>
-            </div>
-
-            <div class="labelRow">
-              <div class="labelKey">Lock #:</div>
-              <div class="labelVal" id="stLock">—</div>
-            </div>
-
-            <div class="labelRow">
-              <div class="labelKey">Cart:</div>
-              <div class="labelVal" id="stCart">—</div>
-            </div>
-
-            <div class="labelFoot">PHI-free log • No patient identifiers</div>
+          <div>
+            <label>Room</label>
+            <input id="room" autocomplete="off" placeholder="e.g., 512" required />
           </div>
-
-          <div class="row" style="margin-top:10px;">
-            <button class="btn" type="button" id="printStickerBtn">Print Sticker</button>
+          <div>
+            <label>Bed</label>
+            <input id="bed" autocomplete="off" placeholder="e.g., A" required />
           </div>
         </div>
 
         <div class="row">
-          <button class="btn primary" type="submit">Save Check</button>
-          <button class="btn" type="button" id="goHistoryBtn">View History</button>
+          <div class="grow">
+            <label>Device Serial / Asset #</label>
+            <input id="serial" autocomplete="off" placeholder="Scan fills this automatically" required />
+          </div>
         </div>
+
+        <div class="row">
+          <button class="btn primary" type="submit">Log Device</button>
+          <button class="btn" type="button" id="btnClear">Clear</button>
+        </div>
+
+        <p class="fine">Stored locally on this device (no PHI, no cloud).</p>
       </form>
     </section>
 
-    <!-- SCREEN: HISTORY -->
-    <section id="screenHistory" class="card" style="display:none;">
-      <div class="card-head">
-        <div>
-          <h1>History</h1>
-          <p class="muted">Tap an entry to view details, print sticker, or export.</p>
+    <section class="card">
+      <h2>Dashboard</h2>
+      <div class="kpis">
+        <div class="kpi">
+          <div class="kpiVal" id="kpiTotal">0</div>
+          <div class="kpiLab">Total Logs</div>
+        </div>
+        <div class="kpi">
+          <div class="kpiVal" id="kpiToday">0</div>
+          <div class="kpiLab">Logged Today</div>
+        </div>
+        <div class="kpi">
+          <div class="kpiVal" id="kpiUnits">0</div>
+          <div class="kpiLab">Unique Units</div>
         </div>
       </div>
 
       <div class="row">
-        <button class="btn" type="button" id="goFormBtn">+ New Check</button>
-        <button class="btn" type="button" id="exportCsvBtn">Export CSV</button>
-        <button class="btn" type="button" id="exportHtmlBtn">Export selected table</button>
-        <button class="btn danger" type="button" id="clearAllBtn">Clear all</button>
+        <button class="btn" id="btnExport">Export CSV</button>
+        <button class="btn danger" id="btnWipe">Wipe All Data</button>
       </div>
 
-      <div class="filters">
-        <label class="field">
-          <span>Filter (location/cart)</span>
-          <input id="filterText" type="text" placeholder="Type to filter..." />
-        </label>
+      <div class="row">
+        <input id="search" class="grow" placeholder="Search unit/room/bed/serial…" />
       </div>
 
       <div class="tableWrap">
-        <table class="table">
+        <table>
           <thead>
             <tr>
+              <th>Time</th>
+              <th>Unit</th>
+              <th>Room</th>
+              <th>Bed</th>
+              <th>Serial</th>
               <th></th>
-              <th>Date</th>
-              <th>Cart</th>
-              <th>First to expire</th>
-              <th>Exp</th>
-              <th>Tech</th>
             </tr>
           </thead>
-          <tbody id="historyTbody"></tbody>
+          <tbody id="tbody"></tbody>
         </table>
       </div>
-
-      <div id="detail" class="detail" style="display:none;"></div>
     </section>
   </main>
 
-  <footer class="footer">
-    <div class="muted">Saved only on this device (LocalStorage) • No PHI</div>
+  <footer class="foot">
+    <span>Tip: On iPhone, tap Share → <b>Add to Home Screen</b> for an app-like install.</span>
   </footer>
-
-  <script src="app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="./app.js?v=9100" defer></script>
 </body>
 </html>
