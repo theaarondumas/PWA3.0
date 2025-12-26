@@ -1,608 +1,519 @@
-/* Wound Vac Tracker (PHI-Free) — iOS Safari QR Scanner (jsQR)
-   - NO modules / NO imports
-   - QR-only scanning via jsQR (global)
-   - Fills Serial field + optional auto-log
-   - LocalStorage logs + KPIs + table + search + export + wipe
+/* UnitFlow — Crash Cart Checks (LocalStorage, PHI-free)
+   - Real-label style sticker (Providence Holy Cross, orange)
+   - iPhone camera photo via file input
+   - CSV export
+   - Export selected rows as clean HTML table in new tab
+   - Print sticker (matches label style)
 */
 
-(() => {
-  "use strict";
-   // Start in Scan-only mode (mobile)
-try { document.body.classList.add("scanOnly"); } catch {}
+const LS_KEYS = {
+  LOGS: "unitflow_crashcart_logs_v1",
+  TECH: "unitflow_tech_name_v1",
+};
 
-function revealAfterCapture() {
-  try {
-    document.body.classList.remove("scanOnly");
-    const logCard = document.querySelector(".grid > .card:nth-child(2)");
-    logCard?.scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch {}
-}
+const $ = (id) => document.getElementById(id);
 
-  // -------------------------
-  // BIG GREEN "LOGGED ✅" OVERLAY (no HTML/CSS needed)
-  // -------------------------
-  function showAccepted(msg = "LOGGED") {
-    let wrap = document.getElementById("wvtAcceptedOverlay");
-    if (!wrap) {
-      wrap = document.createElement("div");
-      wrap.id = "wvtAcceptedOverlay";
-      wrap.style.cssText =
-        "position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:99999;pointer-events:none;";
-      wrap.innerHTML = `
-        <div id="wvtAcceptedBox" style="
-          background:rgba(10,80,40,.92);
-          border:3px solid #3cff9e;
-          border-radius:20px;
-          padding:28px 36px;
-          text-align:center;
-          box-shadow:0 0 30px rgba(60,255,160,.6);
-          transform:scale(.95);
-          opacity:0;
-          transition:opacity .12s ease, transform .12s ease;">
-          <div style="font-size:64px;line-height:1;color:#3cff9e;">✔</div>
-          <div id="wvtAcceptedText" style="margin-top:8px;font-size:32px;font-weight:800;letter-spacing:2px;color:#eafff3;">LOGGED</div>
-        </div>
-      `;
-      document.body.appendChild(wrap);
-    }
+const screenForm = $("screenForm");
+const screenHistory = $("screenHistory");
 
-    const text = document.getElementById("wvtAcceptedText");
-    if (text) text.textContent = msg;
+const logForm = $("logForm");
 
-    const box = document.getElementById("wvtAcceptedBox");
-    wrap.style.display = "flex";
-    requestAnimationFrame(() => {
-      if (box) {
-        box.style.opacity = "1";
-        box.style.transform = "scale(1)";
-      }
-    });
+// Form inputs
+const techName = $("techName");
+const cartId = $("cartId");
+const firstExpire = $("firstExpire");
+const expDate = $("expDate");
+const lockNumber = $("lockNumber");
+const notes = $("notes");
 
-    clearTimeout(showAccepted._t);
-    showAccepted._t = setTimeout(() => {
-      if (box) {
-        box.style.opacity = "0";
-        box.style.transform = "scale(.95)";
-      }
-      setTimeout(() => (wrap.style.display = "none"), 130);
-    }, 900);
-  }
+// Photo
+const cartPhoto = $("cartPhoto");
+const photoPreviewWrap = $("photoPreviewWrap");
+const photoPreview = $("photoPreview");
+const removePhotoBtn = $("removePhotoBtn");
+let pendingPhotoDataUrl = "";
 
-  // -------------------------
-  // OPTIONAL feedback (beep + best-effort haptic)
-  // NOTE: iOS may ignore vibrate; beep may be muted by silent switch.
-  // -------------------------
-  let audioCtx = null;
+// Sticker (real label)
+const stickerPreview = $("stickerPreview");
+const printStickerBtn = $("printStickerBtn");
 
-  async function feedback() {
-    try {
-      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+const stFirstExpire = $("stFirstExpire");
+const stExpDate = $("stExpDate");
+const stCheckDate = $("stCheckDate");
+const stTech = $("stTech");
+const stLock = $("stLock");
+const stCart = $("stCart");
 
-      if (audioCtx.state === "suspended") {
-        await audioCtx.resume();
-      }
+// History
+const goHistoryBtn = $("goHistoryBtn");
+const goFormBtn = $("goFormBtn");
+const historyTbody = $("historyTbody");
+const filterText = $("filterText");
+const detail = $("detail");
 
-      // iOS unlock tick (near silent)
-      const unlockOsc = audioCtx.createOscillator();
-      const unlockGain = audioCtx.createGain();
-      unlockGain.gain.value = 0.00001;
-      unlockOsc.connect(unlockGain);
-      unlockGain.connect(audioCtx.destination);
-      unlockOsc.start();
-      unlockOsc.stop(audioCtx.currentTime + 0.02);
+const exportCsvBtn = $("exportCsvBtn");
+const exportHtmlBtn = $("exportHtmlBtn");
+const clearAllBtn = $("clearAllBtn");
 
-      // confirmation beep
-      const o = audioCtx.createOscillator();
-      const g = audioCtx.createGain();
-      o.type = "sine";
-      o.frequency.value = 880;
+init();
 
-      g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.5, audioCtx.currentTime + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.22);
-      o.stop(audioCtx.currentTime + 0.23);
-      
+function init() {
+  const savedTech = localStorage.getItem(LS_KEYS.TECH);
+  if (savedTech) techName.value = savedTech;
 
-      o.connect(g);
-      g.connect(audioCtx.destination);
-      o.start();
-      o.stop(audioCtx.currentTime + 0.13);
+  [techName, cartId, firstExpire, expDate, lockNumber].forEach((el) => {
+    el.addEventListener("input", updateStickerFromForm);
+    el.addEventListener("change", updateStickerFromForm);
+  });
 
-      // best effort vibrate (often ignored on iOS Safari)
-      if (navigator.vibrate) navigator.vibrate([20, 30, 20]);
-    } catch {}
-  }
+  cartPhoto.addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
 
-  // -------------------------
-  // DOM helpers
-  // -------------------------
-  const $ = (id) => document.getElementById(id);
-
-  // Elements (from your HTML)
-  const securePill = $("securePill");
-
-  const btnStartScan = $("btnStartScan");
-  const btnStopScan = $("btnStopScan");
-  const videoEl = $("video");
-
-  const scanDot = $("scanDot");
-  const scanText = $("scanText");
-  const autoLogEl = $("autoLog");
-
-  const logForm = $("logForm");
-  const unitEl = $("unit");
-  const roomEl = $("room");
-  const bedEl = $("bed");
-  const serialEl = $("serial");
-  const btnClear = $("btnClear");
-
-  const kpiTotal = $("kpiTotal");
-  const kpiToday = $("kpiToday");
-  const kpiUnits = $("kpiUnits");
-
-  const btnExport = $("btnExport");
-  const btnWipe = $("btnWipe");
-  const searchEl = $("search");
-  const tbody = $("tbody");
-
-  // -------------------------
-  // Storage
-  // -------------------------
-  const STORAGE_KEY = "wvt_logs_v3";
-  const MAX_LOGS = 3000;
-
-  function loadLogs() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      const arr = raw ? JSON.parse(raw) : [];
-      return Array.isArray(arr) ? arr : [];
-    } catch {
-      return [];
-    }
-  }
-
-  function saveLogs(logs) {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(logs.slice(-MAX_LOGS)));
-    } catch (e) {
-      console.warn("saveLogs failed", e);
-    }
-  }
-
-  function nowIso() {
-    return new Date().toISOString();
-  }
-
-  function isToday(iso) {
-    try {
-      const d = new Date(iso);
-      const t = new Date();
-      return (
-        d.getFullYear() === t.getFullYear() &&
-        d.getMonth() === t.getMonth() &&
-        d.getDate() === t.getDate()
-      );
-    } catch {
-      return false;
-    }
-  }
-
-  function fmtTime(iso) {
-    try {
-      return new Date(iso).toLocaleString();
-    } catch {
-      return iso;
-    }
-  }
-
-  // -------------------------
-  // UI status
-  // -------------------------
-  function setScanStatus(type, msg) {
-    if (!scanText || !scanDot) return;
-
-    scanText.textContent = msg;
-
-    const colors = {
-      idle: "rgba(180,180,180,0.9)",
-      info: "rgba(120,170,255,0.95)",
-      ok: "rgba(90,255,160,0.95)",
-      err: "rgba(255,90,90,0.95)",
-    };
-
-    scanDot.style.background = colors[type] || colors.idle;
-
-    if (type === "ok") {
-      scanDot.style.boxShadow = "0 0 12px rgba(90,255,160,0.55)";
-      setTimeout(() => (scanDot.style.boxShadow = "none"), 700);
-    } else if (type === "err") {
-      scanDot.style.boxShadow = "0 0 12px rgba(255,90,90,0.45)";
-      setTimeout(() => (scanDot.style.boxShadow = "none"), 1200);
-    } else {
-      scanDot.style.boxShadow = "none";
-    }
-  }
-
-  function setSecurePill() {
-    if (!securePill) return;
-    const isSecure = location.protocol === "https:" || location.hostname === "localhost";
-    securePill.textContent = isSecure ? "HTTPS: secure ✅" : "HTTPS: NOT secure ⚠️";
-  }
-
-  // -------------------------
-  // Logging
-  // -------------------------
-  function normalize(v) {
-    return String(v || "").trim();
-  }
-
-  function getFormValues() {
-    return {
-      unit: normalize(unitEl?.value),
-      room: normalize(roomEl?.value),
-      bed: normalize(bedEl?.value),
-      serial: normalize(serialEl?.value),
-    };
-  }
-
-  function clearForm(keepLocation = true) {
-    if (!keepLocation) {
-      if (unitEl) unitEl.value = "";
-      if (roomEl) roomEl.value = "";
-      if (bedEl) bedEl.value = "";
-    }
-    if (serialEl) serialEl.value = "";
-    serialEl?.focus?.();
-  }
-
-  function addLogEntry({ unit, room, bed, serial, source }) {
-    const s = normalize(serial);
-    if (!unit || !room || !bed || !s) {
-      setScanStatus("err", "Missing Unit/Room/Bed/Serial");
-      return false;
-    }
-
-    const logs = loadLogs();
-    logs.push({ at: nowIso(), unit, room, bed, serial: s, source: source || "manual" });
-    saveLogs(logs);
-
-    renderAll();
-    setScanStatus("ok", "Logged ✅");
-    showAccepted("LOGGED");
-    feedback(); // optional; safe if silent
-    return true;
-  }
-
-  // -------------------------
-  // Table + KPIs
-  // -------------------------
-  function computeKPIs(logs) {
-    const total = logs.length;
-    const today = logs.filter((x) => isToday(x.at)).length;
-    const unitSet = new Set(logs.map((x) => x.unit).filter(Boolean));
-    return { total, today, units: unitSet.size };
-  }
-
-  function matchesSearch(log, q) {
-    if (!q) return true;
-    const hay = `${log.unit} ${log.room} ${log.bed} ${log.serial}`.toLowerCase();
-    return hay.includes(q);
-  }
-
-  function renderTable(logs) {
-    if (!tbody) return;
-    const q = normalize(searchEl?.value).toLowerCase();
-
-    const filtered = logs
-      .slice()
-      .reverse()
-      .filter((x) => matchesSearch(x, q));
-
-    tbody.innerHTML = "";
-
-    for (const row of filtered) {
-      const tr = document.createElement("tr");
-
-      const cells = [fmtTime(row.at), row.unit, row.room, row.bed, row.serial];
-      for (const c of cells) {
-        const td = document.createElement("td");
-        td.textContent = c;
-        tr.appendChild(td);
-      }
-
-      const tdAct = document.createElement("td");
-      const delBtn = document.createElement("button");
-      delBtn.className = "btn";
-      delBtn.type = "button";
-      delBtn.textContent = "Delete";
-      delBtn.addEventListener("click", () => deleteRow(row));
-      tdAct.appendChild(delBtn);
-      tr.appendChild(tdAct);
-
-      tbody.appendChild(tr);
-    }
-  }
-
-  function deleteRow(row) {
-    const ok = confirm("Delete this log entry?");
-    if (!ok) return;
-
-    const logs = loadLogs();
-    const idx = logs.findIndex(
-      (x) =>
-        x.at === row.at &&
-        x.serial === row.serial &&
-        x.unit === row.unit &&
-        x.room === row.room &&
-        x.bed === row.bed
-    );
-    if (idx >= 0) {
-      logs.splice(idx, 1);
-      saveLogs(logs);
-      renderAll();
-      setScanStatus("info", "Deleted");
-    }
-  }
-
-  function renderKPIs(logs) {
-    const { total, today, units } = computeKPIs(logs);
-    if (kpiTotal) kpiTotal.textContent = String(total);
-    if (kpiToday) kpiToday.textContent = String(today);
-    if (kpiUnits) kpiUnits.textContent = String(units);
-  }
-
-  function renderAll() {
-    const logs = loadLogs();
-    renderKPIs(logs);
-    renderTable(logs);
-  }
-
-  // -------------------------
-  // Export / Wipe
-  // -------------------------
-  function escapeCsv(v) {
-    const s = String(v ?? "");
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  }
-
-  function downloadText(filename, text) {
-    const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1500);
-  }
-
-  function onExport() {
-    const logs = loadLogs();
-    if (!logs.length) {
-      setScanStatus("err", "No logs to export");
+    const maxMB = 2;
+    if (file.size > maxMB * 1024 * 1024) {
+      alert(`Photo too large. Keep it under ${maxMB}MB.`);
+      cartPhoto.value = "";
       return;
     }
-    const header = ["timestamp", "unit", "room", "bed", "serial", "source"];
-    const rows = logs.map((x) =>
-      [x.at, x.unit, x.room, x.bed, x.serial, x.source || ""].map(escapeCsv).join(",")
-    );
-    const csv = header.join(",") + "\n" + rows.join("\n");
-    downloadText(`wound-vac-log_${new Date().toISOString().slice(0, 10)}.csv`, csv);
-    setScanStatus("ok", "Exported ✅");
-  }
 
-  function onWipe() {
-    const ok = confirm("Wipe ALL local data/logs on this device?");
-    if (!ok) return;
-    localStorage.removeItem(STORAGE_KEY);
-    renderAll();
-    setScanStatus("info", "All data wiped");
-    clearForm(true);
-  }
+    pendingPhotoDataUrl = await fileToDataURL(file);
+    photoPreview.src = pendingPhotoDataUrl;
+    photoPreviewWrap.style.display = "block";
+  });
 
-  // -------------------------
-  // QR Scanning via jsQR (iOS Safari friendly)
-  // -------------------------
-  let stream = null;
-  let scanning = false;
-  let rafId = null;
-  let lastValue = "";
-  let lastAtMs = 0;
+  removePhotoBtn.addEventListener("click", () => {
+    pendingPhotoDataUrl = "";
+    cartPhoto.value = "";
+    photoPreviewWrap.style.display = "none";
+    photoPreview.src = "";
+  });
 
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-
-  function canUseJsQR() {
-    return typeof window.jsQR === "function";
-  }
-
-  async function startCamera() {
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error("Camera API not supported");
-    if (location.protocol !== "https:" && location.hostname !== "localhost") {
-      throw new Error("Camera requires HTTPS");
-    }
-    if (!videoEl) throw new Error("Video element missing");
-
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-      },
-    });
-
-    videoEl.srcObject = stream;
-    await videoEl.play();
-  }
-
-  function stopCamera() {
-    if (rafId) cancelAnimationFrame(rafId);
-    rafId = null;
-    scanning = false;
-
-    try {
-      if (stream) stream.getTracks().forEach((t) => t.stop());
-    } catch {}
-    stream = null;
-
-    if (videoEl) videoEl.srcObject = null;
-  }
-
-  function acceptDedup(v) {
-    const val = normalize(v);
-    if (!val) return null;
-
-    const t = Date.now();
-    if (val === lastValue && t - lastAtMs < 2500) return null;
-
-    lastValue = val;
-    lastAtMs = t;
-    return val;
-  }
-
-  function scanLoop() {
-    if (!scanning) return;
-
-    try {
-      const w = videoEl.videoWidth || 0;
-      const h = videoEl.videoHeight || 0;
-
-      if (w > 0 && h > 0) {
-        const targetW = 640;
-        const scale = Math.min(1, targetW / w);
-        const cw = Math.floor(w * scale);
-        const ch = Math.floor(h * scale);
-
-        canvas.width = cw;
-        canvas.height = ch;
-
-        ctx.drawImage(videoEl, 0, 0, cw, ch);
-        const img = ctx.getImageData(0, 0, cw, ch);
-
-        const result = window.jsQR(img.data, cw, ch, { inversionAttempts: "attemptBoth" });
-        if (result?.data) {
-          const val = acceptDedup(result.data);
-          if (val) {
-            if (serialEl) serialEl.value = val;
-            setScanStatus("ok", "Scan accepted ✅");
-            revealAfterCapture();
-
-            if (autoLogEl?.checked) {
-              const fv = getFormValues();
-              fv.serial = val;
-
-              if (fv.unit && fv.room && fv.bed) {
-                addLogEntry({ ...fv, source: "scan" });
-              } else {
-                setScanStatus("info", "Scan accepted ✅ — enter Unit/Room/Bed then Log");
-              }
-            }
-
-            setTimeout(() => {
-              if (scanning) rafId = requestAnimationFrame(scanLoop);
-            }, 650);
-            return;
-          }
-        }
-      }
-    } catch {}
-
-    rafId = requestAnimationFrame(scanLoop);
-  }
-
-  async function onStartScan() {
-    try {
-      btnStartScan.disabled = true;
-      btnStopScan.disabled = false;
-
-      if (!canUseJsQR()) {
-        setScanStatus("err", "QR scanner library not loaded. Refresh once.");
-        btnStartScan.disabled = false;
-        btnStopScan.disabled = true;
-        return;
-      }
-
-      // unlock audio on user gesture (best chance beep works)
-      await feedback();
-
-      setScanStatus("info", "Starting camera…");
-      await startCamera();
-
-      scanning = true;
-      setScanStatus("info", "Aim at QR");
-      rafId = requestAnimationFrame(scanLoop);
-    } catch (e) {
-      console.error(e);
-      stopCamera();
-      btnStartScan.disabled = false;
-      btnStopScan.disabled = true;
-
-      const msg = e?.message ? e.message : String(e);
-      if (/denied|permission/i.test(msg)) {
-        setScanStatus("err", "Camera permission denied. Enable camera for this site in Safari settings.");
-      } else {
-        setScanStatus("err", `Camera failed: ${msg}`);
-      }
-    }
-  }
-
-  function onStopScan() {
-    stopCamera();
-    btnStartScan.disabled = false;
-    btnStopScan.disabled = true;
-    setScanStatus("idle", "Idle");
-  }
-
-  // -------------------------
-  // Form handlers
-  // -------------------------
-  function onFormSubmit(e) {
+  logForm.addEventListener("submit", (e) => {
     e.preventDefault();
-    const fv = getFormValues();
-    const ok = addLogEntry({ ...fv, source: "manual" });
-    if (ok) clearForm(true);
+    saveEntry();
+  });
+
+  goHistoryBtn.addEventListener("click", showHistory);
+  goFormBtn.addEventListener("click", showForm);
+
+  filterText.addEventListener("input", renderHistory);
+  exportCsvBtn.addEventListener("click", exportCSV);
+  exportHtmlBtn.addEventListener("click", exportSelectedHTMLTable);
+  clearAllBtn.addEventListener("click", clearAll);
+
+  printStickerBtn.addEventListener("click", () => {
+    updateStickerFromForm(true);
+    printSticker();
+  });
+
+  updateStickerFromForm(false);
+}
+
+function showForm() {
+  screenHistory.style.display = "none";
+  screenForm.style.display = "block";
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function showHistory() {
+  screenForm.style.display = "none";
+  screenHistory.style.display = "block";
+  renderHistory();
+  detail.style.display = "none";
+  detail.innerHTML = "";
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function updateStickerFromForm(forceShow = false) {
+  const tech = (techName.value || "").trim();
+  const cart = (cartId.value || "").trim();
+  const first = (firstExpire.value || "").trim();
+  const exp = expDate.value ? formatDate(expDate.value) : "";
+  const lock = (lockNumber.value || "").trim();
+
+  stFirstExpire.textContent = first || "—";
+  stExpDate.textContent = exp || "—";
+  stTech.textContent = tech || "—";
+  stLock.textContent = lock || "—";
+  stCart.textContent = cart || "—";
+  stCheckDate.textContent = new Date().toLocaleString();
+
+  const shouldShow =
+    forceShow ||
+    tech.length > 0 ||
+    cart.length > 0 ||
+    first.length > 0 ||
+    exp.length > 0 ||
+    lock.length > 0;
+
+  stickerPreview.style.display = shouldShow ? "block" : "none";
+}
+
+function saveEntry() {
+  const tech = techName.value.trim();
+  const cart = cartId.value.trim();
+  const first = firstExpire.value.trim();
+  const expRaw = expDate.value;
+  const lock = lockNumber.value.trim();
+  const note = notes.value.trim();
+
+  if (!tech || !cart || !first || !expRaw) {
+    alert("Please complete: Your name, Cart, First supply to expire, and Expiration date.");
+    return;
   }
 
-  function onClear() {
-    clearForm(true);
-    setScanStatus("info", "Cleared form");
+  localStorage.setItem(LS_KEYS.TECH, tech);
+
+  const now = new Date();
+  const entry = {
+    id: cryptoRandomId(),
+    createdAt: now.toISOString(),
+    techName: tech,
+    cartId: cart,
+    firstExpire: first,
+    expDate: expRaw,
+    lockNumber: lock,
+    notes: note,
+    photoDataUrl: pendingPhotoDataUrl || "",
+  };
+
+  const logs = loadLogs();
+  logs.unshift(entry);
+  saveLogs(logs);
+
+  logForm.reset();
+  techName.value = tech;
+
+  pendingPhotoDataUrl = "";
+  cartPhoto.value = "";
+  photoPreviewWrap.style.display = "none";
+  photoPreview.src = "";
+
+  updateStickerFromForm(false);
+
+  alert("Saved.");
+  showHistory();
+}
+
+function renderHistory() {
+  const logs = loadLogs();
+  const q = (filterText.value || "").trim().toLowerCase();
+
+  const filtered = q
+    ? logs.filter((x) => (x.cartId || "").toLowerCase().includes(q))
+    : logs;
+
+  historyTbody.innerHTML = "";
+
+  if (filtered.length === 0) {
+    historyTbody.innerHTML = `<tr><td colspan="6" class="muted" style="padding:14px;">No entries yet.</td></tr>`;
+    return;
   }
 
-  // -------------------------
-  // Init / lifecycle
-  // -------------------------
-  function wire() {
-    setSecurePill();
-    renderAll();
-    setScanStatus("idle", "Idle");
+  for (const entry of filtered) {
+    const tr = document.createElement("tr");
 
-    btnStartScan?.addEventListener("click", onStartScan);
-    btnStopScan?.addEventListener("click", onStopScan);
+    const cbTd = document.createElement("td");
+    cbTd.innerHTML = `<input type="checkbox" class="rowSelect" data-id="${escapeHtml(entry.id)}" />`;
+    tr.appendChild(cbTd);
 
-    logForm?.addEventListener("submit", onFormSubmit);
-    btnClear?.addEventListener("click", onClear);
+    tr.appendChild(tdText(new Date(entry.createdAt).toLocaleString()));
+    tr.appendChild(tdText(entry.cartId || ""));
+    tr.appendChild(tdText(entry.firstExpire || ""));
+    tr.appendChild(tdText(entry.expDate ? formatDate(entry.expDate) : ""));
+    tr.appendChild(tdText(entry.techName || ""));
 
-    btnExport?.addEventListener("click", onExport);
-    btnWipe?.addEventListener("click", onWipe);
+    tr.style.cursor = "pointer";
+    tr.addEventListener("click", (e) => {
+      if (e.target && e.target.classList && e.target.classList.contains("rowSelect")) return;
+      showDetail(entry.id);
+    });
 
-    searchEl?.addEventListener("input", () => renderAll());
+    historyTbody.appendChild(tr);
+  }
+}
 
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) {
-        try { onStopScan(); } catch {}
+function showDetail(id) {
+  const logs = loadLogs();
+  const entry = logs.find((x) => x.id === id);
+  if (!entry) return;
+
+  detail.style.display = "block";
+
+  const expNice = entry.expDate ? formatDate(entry.expDate) : "";
+  const createdNice = entry.createdAt ? new Date(entry.createdAt).toLocaleString() : "";
+
+  detail.innerHTML = `
+    <h2>Crash Cart Check</h2>
+    <div class="kv"><div class="k">Date</div><div class="v">${escapeHtml(createdNice)}</div></div>
+    <div class="kv"><div class="k">Cart</div><div class="v">${escapeHtml(entry.cartId || "")}</div></div>
+    <div class="kv"><div class="k">First to expire</div><div class="v">${escapeHtml(entry.firstExpire || "")}</div></div>
+    <div class="kv"><div class="k">Exp date</div><div class="v">${escapeHtml(expNice)}</div></div>
+    <div class="kv"><div class="k">Lock #</div><div class="v">${escapeHtml(entry.lockNumber || "—")}</div></div>
+    <div class="kv"><div class="k">Tech</div><div class="v">${escapeHtml(entry.techName || "")}</div></div>
+    <div class="kv"><div class="k">Notes</div><div class="v">${escapeHtml(entry.notes || "—")}</div></div>
+
+    <div class="row" style="margin-top:10px;">
+      <button class="btn" type="button" id="detailPrintSticker">Print Sticker</button>
+    </div>
+
+    ${entry.photoDataUrl ? `<img src="${entry.photoDataUrl}" alt="Crash cart photo" />` : `<div class="muted" style="margin-top:10px;">No photo attached.</div>`}
+  `;
+
+  $("detailPrintSticker").addEventListener("click", () => printStickerFromEntry(entry));
+  detail.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function printSticker() {
+  const stickerEl = document.querySelector("#stickerPreview .labelSticker");
+  if (!stickerEl) return alert("Sticker preview not available yet.");
+  printHtmlDocument(stickerEl.outerHTML);
+}
+
+function printStickerFromEntry(entry) {
+  const expNice = entry.expDate ? formatDate(entry.expDate) : "—";
+  const checkNice = entry.createdAt ? new Date(entry.createdAt).toLocaleString() : "—";
+
+  const html = `
+    <div class="labelSticker">
+      <div class="labelTop">
+        <div class="labelMeta">
+          <div class="labelFacility">Providence Holy Cross</div>
+          <div class="labelDept">Central Department</div>
+          <div class="labelPhone">818-496-1190</div>
+        </div>
+      </div>
+
+      <div class="labelTitle">CRASH CART CHECK</div>
+
+      <div class="labelRow">
+        <div class="labelKey">First supply to expire:</div>
+        <div class="labelVal">${escapeHtml(entry.firstExpire || "—")}</div>
+      </div>
+
+      <div class="labelRow">
+        <div class="labelKey">Exp date:</div>
+        <div class="labelVal">${escapeHtml(expNice)}</div>
+      </div>
+
+      <div class="labelRow">
+        <div class="labelKey">Check date done:</div>
+        <div class="labelVal">${escapeHtml(checkNice)}</div>
+      </div>
+
+      <div class="labelRow">
+        <div class="labelKey">CS tech:</div>
+        <div class="labelVal">${escapeHtml(entry.techName || "—")}</div>
+      </div>
+
+      <div class="labelRow">
+        <div class="labelKey">Lock #:</div>
+        <div class="labelVal">${escapeHtml(entry.lockNumber || "—")}</div>
+      </div>
+
+      <div class="labelRow">
+        <div class="labelKey">Cart:</div>
+        <div class="labelVal">${escapeHtml(entry.cartId || "—")}</div>
+      </div>
+
+      <div class="labelFoot">PHI-free log • No patient identifiers</div>
+    </div>
+  `;
+
+  printHtmlDocument(html);
+}
+
+function exportCSV() {
+  const logs = loadLogs();
+  if (logs.length === 0) return alert("No logs to export.");
+
+  const header = ["createdAt","cartId","firstExpire","expDate","lockNumber","techName","notes","hasPhoto"];
+  const rows = logs.map((x) => ([
+    x.createdAt || "",
+    x.cartId || "",
+    x.firstExpire || "",
+    x.expDate || "",
+    x.lockNumber || "",
+    x.techName || "",
+    (x.notes || "").replace(/\n/g," "),
+    x.photoDataUrl ? "yes" : "no",
+  ]));
+
+  const csv = [header, ...rows].map((r) => r.map(csvEscape).join(",")).join("\n");
+
+  const blob = new Blob([csv], { type:"text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `crash_cart_checks_${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportSelectedHTMLTable() {
+  const logs = loadLogs();
+  const checked = Array.from(document.querySelectorAll(".rowSelect"))
+    .filter((cb) => cb.checked)
+    .map((cb) => cb.getAttribute("data-id"));
+
+  const selected = logs.filter((x) => checked.includes(x.id));
+  if (selected.length === 0) return alert("Select at least one row using the checkbox column.");
+
+  const rows = selected.map((x) => ({
+    Date: x.createdAt ? new Date(x.createdAt).toLocaleString() : "",
+    Cart: x.cartId || "",
+    "First to expire": x.firstExpire || "",
+    "Exp date": x.expDate ? formatDate(x.expDate) : "",
+    "Lock #": x.lockNumber || "",
+    Tech: x.techName || "",
+    Notes: x.notes || "",
+    Photo: x.photoDataUrl ? "Yes" : "No",
+  }));
+
+  const tableHtml = buildCleanTable(rows);
+  const title = `Crash Cart Checks (${selected.length})`;
+
+  const doc = `
+    <!doctype html><html><head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width,initial-scale=1" />
+      <title>${escapeHtml(title)}</title>
+      <style>
+        body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#111}
+        h1{font-size:18px;margin:0 0 12px}
+        table{border-collapse:collapse;width:100%}
+        th,td{border:1px solid #ccc;padding:8px;font-size:12px;vertical-align:top}
+        th{background:#f3f3f3;text-align:left}
+        .muted{color:#666;font-size:12px;margin-top:10px}
+      </style>
+    </head><body>
+      <h1>${escapeHtml(title)}</h1>
+      ${tableHtml}
+      <div class="muted">PHI-free export • Generated ${escapeHtml(new Date().toLocaleString())}</div>
+    </body></html>
+  `;
+
+  const win = window.open("", "_blank");
+  if (!win) return alert("Popup blocked. Allow popups to export table.");
+  win.document.open();
+  win.document.write(doc);
+  win.document.close();
+}
+
+function clearAll() {
+  if (!confirm("Clear ALL crash cart logs on this device? This cannot be undone.")) return;
+  localStorage.removeItem(LS_KEYS.LOGS);
+  renderHistory();
+  detail.style.display = "none";
+  detail.innerHTML = "";
+}
+
+function loadLogs() {
+  try {
+    const raw = localStorage.getItem(LS_KEYS.LOGS);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+function saveLogs(logs) {
+  localStorage.setItem(LS_KEYS.LOGS, JSON.stringify(logs));
+}
+
+/* Helpers */
+function tdText(text) { const td=document.createElement("td"); td.textContent=text; return td; }
+
+function csvEscape(value) {
+  const s = String(value ?? "");
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function formatDate(yyyyMmDd) {
+  const [y,m,d] = String(yyyyMmDd).split("-").map(Number);
+  if (!y || !m || !d) return String(yyyyMmDd);
+  const dt = new Date(y, m - 1, d);
+  return dt.toLocaleDateString(undefined, { year:"numeric", month:"short", day:"2-digit" });
+}
+
+function escapeHtml(str) {
+  return String(str ?? "")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
+
+function buildCleanTable(rows) {
+  const cols = Object.keys(rows[0] || {});
+  const thead = `<thead><tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join("")}</tr></thead>`;
+  const tbody = `<tbody>${rows.map(r => `<tr>${cols.map(c => `<td>${escapeHtml(r[c])}</td>`).join("")}</tr>`).join("")}</tbody>`;
+  return `<table>${thead}${tbody}</table>`;
+}
+
+function cryptoRandomId() {
+  if (crypto && crypto.getRandomValues) {
+    const a = new Uint32Array(3);
+    crypto.getRandomValues(a);
+    return Array.from(a).map(n => n.toString(16)).join("-");
+  }
+  return String(Date.now()) + "-" + Math.random().toString(16).slice(2);
+}
+
+function fileToDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function printHtmlDocument(innerHtml) {
+  // Print with the same label styling (no external CSS)
+  const css = `
+    <style>
+      :root{ --labelOrange:#ff7a00; --labelInk:#0b0c10; }
+      body{margin:24px;font-family:Arial,Helvetica,sans-serif}
+      .labelSticker{
+        width:100%;max-width:560px;
+        background:linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,0) 42%), var(--labelOrange);
+        color:var(--labelInk);
+        border:3px solid #111;border-radius:10px;padding:12px 12px 10px;
+        box-shadow:0 12px 22px rgba(0,0,0,.22), inset 0 0 0 1px rgba(255,255,255,.20);
+        position:relative; overflow:hidden;
       }
-    });
+      .labelSticker::after{
+        content:""; position:absolute; inset:0;
+        background:repeating-linear-gradient(45deg, rgba(255,255,255,.10), rgba(255,255,255,.10) 6px, rgba(255,255,255,0) 6px, rgba(255,255,255,0) 14px);
+        opacity:.10; pointer-events:none;
+      }
+      .labelTop{position:relative; z-index:1; display:flex; justify-content:space-between; margin-bottom:6px;}
+      .labelMeta{font-size:12px; line-height:1.15; font-weight:800;}
+      .labelFacility{font-size:13px; letter-spacing:.2px; font-weight:900;}
+      .labelDept,.labelPhone{opacity:.92; font-weight:800; margin-top:2px;}
+      .labelTitle{position:relative; z-index:1; text-align:center; font-weight:900; letter-spacing:.8px; font-size:22px; margin:6px 0 10px; text-transform:uppercase;}
+      .labelRow{position:relative; z-index:1; display:flex; gap:10px; align-items:baseline; margin:9px 0;}
+      .labelKey{width:175px; font-size:13px; font-weight:800;}
+      .labelVal{
+        flex:1; font-size:14px; font-weight:900; padding-bottom:2px;
+        border-bottom:2px solid rgba(0,0,0,.55);
+        border-radius:6px; padding-left:6px;
+        background:linear-gradient(to bottom, rgba(255,255,255,.08), rgba(255,255,255,0));
+      }
+      .labelFoot{position:relative; z-index:1; margin-top:10px; font-size:11px; font-weight:800; opacity:.92; text-align:center; padding-top:6px; border-top:1px solid rgba(0,0,0,.18);}
+    </style>
+  `;
 
-    window.addEventListener("pagehide", () => {
-      try { stopCamera(); } catch {}
-    });
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", wire);
-  } else {
-    wire();
-  }
-})();
+  const win = window.open("", "_blank");
+  if (!win) return alert("Popup blocked. Allow popups to print.");
+  win.document.open();
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8" />${css}</head><body>${innerHtml}<script>window.onload=()=>window.print();<\/script></body></html>`);
+  win.document.close();
+}
